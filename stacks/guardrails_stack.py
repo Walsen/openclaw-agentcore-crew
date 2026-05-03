@@ -41,8 +41,10 @@ class GuardrailsStack(cdk.Stack):
                 "SEXUAL",
                 "VIOLENCE",
                 "MISCONDUCT",
-                "PROMPT_ATTACK",
             ]
+        ] + [
+            # PROMPT_ATTACK only applies to input — output must be NONE
+            {"type": "PROMPT_ATTACK", "inputStrength": filter_level, "outputStrength": "NONE"},
         ]
 
         pii_entities = [
