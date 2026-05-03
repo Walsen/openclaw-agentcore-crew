@@ -1,17 +1,15 @@
-"""Security Stack — KMS, Secrets Manager, and Cognito for OpenClaw.
+"""Security Stack — KMS and Secrets Manager for OpenClaw.
 
 Creates:
-  - KMS CMK for encrypting secrets and S3 data at rest
+  - KMS CMK for encrypting secrets at rest
   - Secrets Manager secrets for each channel (Telegram, Slack, WhatsApp, Discord)
   - A webhook verification secret (auto-generated)
-  - Cognito User Pool for optional web UI authentication
 """
 
 import aws_cdk as cdk
 from aws_cdk import (
     aws_kms as kms,
     aws_secretsmanager as secretsmanager,
-    aws_cognito as cognito,
 )
 from constructs import Construct
 

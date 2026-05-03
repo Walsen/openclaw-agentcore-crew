@@ -113,7 +113,7 @@ def get_stack_output(cfn: boto3.client, stack_name: str, output_key: str) -> Opt
             if o["OutputKey"] == output_key:
                 return o["OutputValue"]
         return None
-    except cfn.exceptions.ClientError:
+    except botocore.exceptions.ClientError:
         return None
 
 
@@ -134,10 +134,10 @@ def run_cdk(args: list[str], config: dict, dry_run: bool = False) -> None:
     region = config.get("region", "us-east-1")
     env = os.environ.copy()
     env["AWS_DEFAULT_REGION"] = region
+    env["JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION"] = "1"
     if profile and profile not in ("None", "REPLACE_WITH_YOUR_SSO_PROFILE_NAME"):
         env["AWS_PROFILE"] = profile
 
-    venv_python = PROJECT_ROOT / ".venv" / "bin" / "python"
     cmd = ["cdk"] + args
     if dry_run:
         log.info("[dry-run] Would run: %s", " ".join(cmd))

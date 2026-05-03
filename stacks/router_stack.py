@@ -20,7 +20,6 @@ from aws_cdk import (
 )
 from constructs import Construct
 
-from stacks.vpc_stack import VpcStack
 from stacks.agentcore_stack import AgentCoreStack
 
 
@@ -30,7 +29,6 @@ class RouterStack(cdk.Stack):
         scope: Construct,
         construct_id: str,
         *,
-        vpc_stack: VpcStack,
         agentcore_stack: AgentCoreStack,
         **kwargs,
     ) -> None:
@@ -38,11 +36,10 @@ class RouterStack(cdk.Stack):
 
         prefix = self.node.try_get_context("stack_prefix") or "OpenClaw"
         channels = self.node.try_get_context("channels") or ["telegram"]
-        timeout_s = self.node.try_get_context("router_lambda_timeout_seconds") or 600
+        timeout_s = self.node.try_get_context("router_lambda_timeout_seconds") or 30
         memory_mb = self.node.try_get_context("router_lambda_memory_mb") or 256
-        log_retention = self.node.try_get_context("cloudwatch_log_retention_days") or 30
         max_users = self.node.try_get_context("max_users") or 10
-        registration_open = self.node.try_get_context("registration_open")
+        registration_open = self.node.try_get_context("registration_open") or False
 
         # --- DynamoDB identity table --------------------------------------
         self.identity_table = dynamodb.Table(
@@ -108,13 +105,13 @@ class RouterStack(cdk.Stack):
                 **{
                     f"{ch.upper()}_SECRET_ARN": (
                         f"arn:aws:secretsmanager:{self.region}:{self.account}"
-                        f":secret:openclaw/channels/{ch}-??????"
+                        f":secret:openclaw/channels/{ch}-*"
                     )
                     for ch in channels
                 },
                 "WEBHOOK_SECRET_ARN": (
                     f"arn:aws:secretsmanager:{self.region}:{self.account}"
-                    ":secret:openclaw/webhook-secret-??????"
+                    ":secret:openclaw/webhook-secret-*"
                 ),
             },
             log_group=router_log_group,

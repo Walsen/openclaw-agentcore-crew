@@ -17,8 +17,6 @@ class VpcStack(cdk.Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        log_retention = self.node.try_get_context("cloudwatch_log_retention_days") or 30
-
         # --- VPC ----------------------------------------------------------
         self.vpc = ec2.Vpc(
             self,

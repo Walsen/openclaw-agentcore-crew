@@ -238,6 +238,13 @@ def _register_user(channel: str, channel_user_id: str, display_name: str) -> dic
     return item
 
 
+REPLY_FUNCS = {
+    "telegram":  _reply_telegram,
+    "slack":     _reply_slack,
+    "whatsapp":  _reply_whatsapp,
+}
+
+
 # ── AgentCore invocation ──────────────────────────────────────────────────
 
 def _invoke_and_reply(tenant_id: str, message: str, channel: str,
@@ -397,13 +404,6 @@ def _reply_discord(interaction_token: str, application_id: str, text: str) -> No
         urllib.request.urlopen(req, timeout=10)
     except Exception as e:
         logger.error("Discord reply failed: %s", e)
-
-
-REPLY_FUNCS = {
-    "telegram":  _reply_telegram,
-    "slack":     _reply_slack,
-    "whatsapp":  _reply_whatsapp,
-}
 
 
 # ── Lambda handler ────────────────────────────────────────────────────────

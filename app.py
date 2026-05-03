@@ -88,7 +88,6 @@ agentcore_stack = AgentCoreStack(
 router_stack = RouterStack(
     app,
     f"{prefix}Router",
-    vpc_stack=vpc_stack,
     agentcore_stack=agentcore_stack,
     env=env,
     description="OpenClaw — Router Lambda, API Gateway, DynamoDB identity",

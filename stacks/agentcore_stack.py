@@ -35,7 +35,7 @@ class AgentCoreStack(cdk.Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         prefix = self.node.try_get_context("stack_prefix") or "OpenClaw"
-        model_id = self.node.try_get_context("default_model_id")
+        model_id = self.node.try_get_context("default_model_id") or "us.anthropic.claude-sonnet-4-20250514-v1:0"
         docker_image = self.node.try_get_context("docker_image") or "ffactory/openclaw:latest"
         user_files_ttl = self.node.try_get_context("user_files_ttl_days") or 365
 

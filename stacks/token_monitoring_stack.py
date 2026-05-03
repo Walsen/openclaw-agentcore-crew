@@ -33,7 +33,6 @@ class TokenMonitoringStack(cdk.Stack):
         token_ttl = self.node.try_get_context("token_ttl_days") or 90
         daily_budget = self.node.try_get_context("daily_token_budget") or 1000000
         cost_budget = self.node.try_get_context("daily_cost_budget_usd") or 10
-        log_retention = self.node.try_get_context("cloudwatch_log_retention_days") or 30
 
         # --- Token usage table --------------------------------------------
         self.usage_table = dynamodb.Table(

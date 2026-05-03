@@ -21,7 +21,7 @@ class GuardrailsStack(cdk.Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         enabled = self.node.try_get_context("enable_guardrails")
-        if enabled is False:
+        if not enabled:
             self.guardrail_id = ""
             self.guardrail_version = ""
             return

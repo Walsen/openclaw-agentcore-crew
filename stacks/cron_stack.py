@@ -33,7 +33,6 @@ class CronStack(cdk.Stack):
         prefix = self.node.try_get_context("stack_prefix") or "OpenClaw"
         timeout_s = self.node.try_get_context("cron_lambda_timeout_seconds") or 900
         memory_mb = self.node.try_get_context("cron_lambda_memory_mb") or 256
-        log_retention = self.node.try_get_context("cloudwatch_log_retention_days") or 30
 
         # --- Cron executor Lambda log group -------------------------------
         cron_log_group = logs.LogGroup(
@@ -58,6 +57,7 @@ class CronStack(cdk.Stack):
             environment={
                 "IDENTITY_TABLE": router_stack.identity_table.table_name,
                 "STACK_NAME": prefix,
+                "RUNTIME_ID": self.node.try_get_context("runtime_id") or "",
             },
             log_group=cron_log_group,
         )
