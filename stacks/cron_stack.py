@@ -35,6 +35,15 @@ class CronStack(cdk.Stack):
         memory_mb = self.node.try_get_context("cron_lambda_memory_mb") or 256
         log_retention = self.node.try_get_context("cloudwatch_log_retention_days") or 30
 
+        # --- Cron executor Lambda log group -------------------------------
+        cron_log_group = logs.LogGroup(
+            self,
+            "CronLogGroup",
+            log_group_name=f"/aws/lambda/{prefix.lower()}-cron",
+            retention=logs.RetentionDays.ONE_MONTH,
+            removal_policy=cdk.RemovalPolicy.DESTROY,
+        )
+
         # --- Cron executor Lambda -----------------------------------------
         self.cron_function = lambda_.Function(
             self,
@@ -50,7 +59,7 @@ class CronStack(cdk.Stack):
                 "IDENTITY_TABLE": router_stack.identity_table.table_name,
                 "STACK_NAME": prefix,
             },
-            log_retention=logs.RetentionDays(log_retention),
+            log_group=cron_log_group,
         )
 
         # Grant permissions

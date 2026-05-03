@@ -21,7 +21,6 @@ from aws_cdk import (
 from constructs import Construct
 
 from stacks.vpc_stack import VpcStack
-from stacks.security_stack import SecurityStack
 from stacks.agentcore_stack import AgentCoreStack
 
 
@@ -32,7 +31,6 @@ class RouterStack(cdk.Stack):
         construct_id: str,
         *,
         vpc_stack: VpcStack,
-        security_stack: SecurityStack,
         agentcore_stack: AgentCoreStack,
         **kwargs,
     ) -> None:
@@ -58,10 +56,11 @@ class RouterStack(cdk.Stack):
                 name="sk", type=dynamodb.AttributeType.STRING
             ),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
-            encryption=dynamodb.TableEncryption.CUSTOMER_MANAGED,
-            encryption_key=security_stack.kms_key,
+            encryption=dynamodb.TableEncryption.AWS_MANAGED,
             removal_policy=cdk.RemovalPolicy.RETAIN,
-            point_in_time_recovery=True,
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
+                point_in_time_recovery_enabled=True,
+            ),
         )
 
         # GSI for looking up users by channel ID
@@ -76,6 +75,15 @@ class RouterStack(cdk.Stack):
         # runtime_id is populated in cdk.json after Phase 2 completes
         runtime_id = self.node.try_get_context("runtime_id") or ""
 
+        # --- Router Lambda log group --------------------------------------
+        router_log_group = logs.LogGroup(
+            self,
+            "RouterLogGroup",
+            log_group_name=f"/aws/lambda/{prefix.lower()}-router",
+            retention=logs.RetentionDays.ONE_MONTH,
+            removal_policy=cdk.RemovalPolicy.DESTROY,
+        )
+
         # --- Router Lambda ------------------------------------------------
         self.router_function = lambda_.Function(
             self,
@@ -83,16 +91,7 @@ class RouterStack(cdk.Stack):
             function_name=f"{prefix.lower()}-router",
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="index.handler",
-            code=lambda_.Code.from_asset(
-                "lambda/router",
-                bundling=cdk.BundlingOptions(
-                    image=lambda_.Runtime.PYTHON_3_12.bundling_image,
-                    command=[
-                        "bash", "-c",
-                        "pip install -r requirements.txt -t /asset-output && cp -r . /asset-output",
-                    ],
-                ),
-            ),
+            code=lambda_.Code.from_asset("lambda/router"),
             timeout=cdk.Duration.seconds(timeout_s),
             memory_size=memory_mb,
             architecture=lambda_.Architecture.ARM_64,
@@ -104,23 +103,51 @@ class RouterStack(cdk.Stack):
                 "MAX_USERS": str(max_users),
                 "REGISTRATION_OPEN": str(registration_open).lower(),
                 "RUNTIME_ID": runtime_id,
-                # Per-channel secret ARNs — router uses these to verify
-                # signatures and to send replies back to each platform
+                # Secret ARNs use predictable names set by SecurityStack.
+                # Using ARN patterns avoids cross-stack object references.
                 **{
-                    f"{ch.upper()}_SECRET_ARN": secret.secret_arn
-                    for ch, secret in security_stack.channel_secrets.items()
+                    f"{ch.upper()}_SECRET_ARN": (
+                        f"arn:aws:secretsmanager:{self.region}:{self.account}"
+                        f":secret:openclaw/channels/{ch}-??????"
+                    )
+                    for ch in channels
                 },
-                "WEBHOOK_SECRET_ARN": security_stack.webhook_secret.secret_arn,
+                "WEBHOOK_SECRET_ARN": (
+                    f"arn:aws:secretsmanager:{self.region}:{self.account}"
+                    ":secret:openclaw/webhook-secret-??????"
+                ),
             },
-            log_retention=logs.RetentionDays(log_retention),
+            log_group=router_log_group,
         )
 
-        # Grant Lambda permissions
+        # Grant Lambda permissions — use explicit ARN-based policies to avoid
+        # cross-stack dependency cycles with SecurityStack
         self.identity_table.grant_read_write_data(self.router_function)
-        security_stack.kms_key.grant_decrypt(self.router_function)
-        for secret in security_stack.channel_secrets.values():
-            secret.grant_read(self.router_function)
-        security_stack.webhook_secret.grant_read(self.router_function)
+
+        # KMS — explicit policy, no cross-stack reference
+        self.router_function.add_to_role_policy(
+            iam.PolicyStatement(
+                sid="KmsDecrypt",
+                actions=["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"],
+                resources=["*"],
+                conditions={
+                    "StringLike": {
+                        "kms:ViaService": f"secretsmanager.{self.region}.amazonaws.com"
+                    }
+                },
+            )
+        )
+
+        # Secrets Manager — wildcard ARN, no cross-stack object references
+        self.router_function.add_to_role_policy(
+            iam.PolicyStatement(
+                sid="SecretsRead",
+                actions=["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+                resources=[
+                    f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:openclaw/*"
+                ],
+            )
+        )
 
         # AgentCore invoke permission
         self.router_function.add_to_role_policy(

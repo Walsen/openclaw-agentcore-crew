@@ -13,9 +13,9 @@
     ]
   },
   "context": {
-    "account": "REPLACE_WITH_YOUR_AWS_ACCOUNT_ID",
+    "account": "862307432587",
     "region": "us-east-1",
-    "aws_profile": "REPLACE_WITH_YOUR_SSO_PROFILE_NAME",
+    "aws_profile": "walsen",
     "stack_prefix": "OpenClaw",
     "docker_image": "ffactory/openclaw:latest",
     "default_model_id": "us.anthropic.claude-sonnet-4-20250514-v1:0",

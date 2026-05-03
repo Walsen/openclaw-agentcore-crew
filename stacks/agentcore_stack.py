@@ -19,7 +19,6 @@ from aws_cdk import (
 from constructs import Construct
 
 from stacks.vpc_stack import VpcStack
-from stacks.security_stack import SecurityStack
 from stacks.guardrails_stack import GuardrailsStack
 
 
@@ -30,7 +29,6 @@ class AgentCoreStack(cdk.Stack):
         construct_id: str,
         *,
         vpc_stack: VpcStack,
-        security_stack: SecurityStack,
         guardrails_stack: GuardrailsStack,
         **kwargs,
     ) -> None:
@@ -38,16 +36,17 @@ class AgentCoreStack(cdk.Stack):
 
         prefix = self.node.try_get_context("stack_prefix") or "OpenClaw"
         model_id = self.node.try_get_context("default_model_id")
-        docker_image = self.node.try_get_context("docker_image")
+        docker_image = self.node.try_get_context("docker_image") or "ffactory/openclaw:latest"
         user_files_ttl = self.node.try_get_context("user_files_ttl_days") or 365
 
         # --- S3 workspace bucket ------------------------------------------
+        # Import KMS key ARN via CloudFormation export to avoid cross-stack
+        # cyclic dependency. SecurityStack exports "OpenClaw-KmsKeyArn".
         self.workspace_bucket = s3.Bucket(
             self,
             "WorkspaceBucket",
             bucket_name=f"{prefix.lower()}-workspaces-{self.account}-{self.region}",
-            encryption=s3.BucketEncryption.KMS,
-            encryption_key=security_stack.kms_key,
+            encryption=s3.BucketEncryption.KMS_MANAGED,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             enforce_ssl=True,
             versioned=True,
@@ -116,13 +115,33 @@ class AgentCoreStack(cdk.Stack):
         # S3 workspace access
         self.workspace_bucket.grant_read_write(self.execution_role)
 
-        # KMS decrypt for secrets
-        security_stack.kms_key.grant_decrypt(self.execution_role)
+        # KMS — allow decrypt for S3 KMS_MANAGED key and the CMK
+        self.execution_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="KmsDecrypt",
+                actions=["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"],
+                resources=["*"],
+                conditions={
+                    "StringLike": {
+                        "kms:ViaService": [
+                            f"s3.{self.region}.amazonaws.com",
+                            f"secretsmanager.{self.region}.amazonaws.com",
+                        ]
+                    }
+                },
+            )
+        )
 
-        # Secrets Manager read
-        for secret in security_stack.channel_secrets.values():
-            secret.grant_read(self.execution_role)
-        security_stack.webhook_secret.grant_read(self.execution_role)
+        # Secrets Manager read — use ARN wildcards to avoid cross-stack refs
+        self.execution_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="SecretsRead",
+                actions=["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+                resources=[
+                    f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:openclaw/*"
+                ],
+            )
+        )
 
         # DynamoDB (identity table created in router stack — grant later)
         self.execution_role.add_to_policy(

@@ -51,6 +51,15 @@ class TokenMonitoringStack(cdk.Stack):
             time_to_live_attribute="ttl",
         )
 
+        # --- Token processor Lambda log group ----------------------------
+        processor_log_group = logs.LogGroup(
+            self,
+            "ProcessorLogGroup",
+            log_group_name=f"/aws/lambda/{prefix.lower()}-token-processor",
+            retention=logs.RetentionDays.ONE_MONTH,
+            removal_policy=cdk.RemovalPolicy.DESTROY,
+        )
+
         # --- Token processor Lambda ---------------------------------------
         self.processor_function = lambda_.Function(
             self,
@@ -69,7 +78,7 @@ class TokenMonitoringStack(cdk.Stack):
                 "DAILY_COST_BUDGET_USD": str(cost_budget),
                 "TOKEN_TTL_DAYS": str(token_ttl),
             },
-            log_retention=logs.RetentionDays(log_retention),
+            log_group=processor_log_group,
         )
 
         self.usage_table.grant_read_write_data(self.processor_function)

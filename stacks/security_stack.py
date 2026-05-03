@@ -56,3 +56,12 @@ class SecurityStack(cdk.Stack):
                 exclude_punctuation=True,
             ),
         )
+
+        # Export KMS key ARN so other stacks can import it without creating
+        # a cross-stack object reference (which causes dependency cycles)
+        cdk.CfnOutput(
+            self,
+            "KmsKeyArn",
+            value=self.kms_key.key_arn,
+            export_name="OpenClaw-KmsKeyArn",
+        )

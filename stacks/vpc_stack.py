@@ -43,7 +43,7 @@ class VpcStack(cdk.Stack):
         flow_log_group = logs.LogGroup(
             self,
             "FlowLogGroup",
-            retention=logs.RetentionDays(log_retention),
+            retention=logs.RetentionDays.ONE_MONTH,
             removal_policy=cdk.RemovalPolicy.DESTROY,
         )
 
