@@ -43,6 +43,9 @@ devbox shell
 
 # AgentCore CLI (install inside devbox shell)
 uv tool install bedrock-agentcore-toolkit
+
+# AWS SSO — log in before running any scripts
+aws sso login --profile YOUR_SSO_PROFILE_NAME
 ```
 
 ## Step-by-Step Deployment Guide
@@ -53,29 +56,27 @@ uv tool install bedrock-agentcore-toolkit
 # 1. Enter the devbox shell (installs all tools automatically)
 devbox shell
 
-# 2. Configure AWS credentials
-aws configure
-#    Enter: Access Key ID, Secret Access Key, region (us-east-1), output (json)
+# 2. Log in with SSO
+aws sso login --profile YOUR_SSO_PROFILE_NAME
+#    This opens a browser window — approve the login
 
 # 3. Verify you're connected to the right account
-aws sts get-caller-identity
+aws sts get-caller-identity --profile YOUR_SSO_PROFILE_NAME
 #    You should see your Account ID, UserId, and Arn
 
-# 4. Edit cdk.json — replace the account placeholder with your real account ID
-#    Open cdk.json and change:
-#      "account": "REPLACE_WITH_YOUR_AWS_ACCOUNT_ID"
-#    to your 12-digit AWS account ID from the step above
+# 4. Edit cdk.json — set your account ID and SSO profile name
+#    "account": "123456789012"
+#    "aws_profile": "YOUR_SSO_PROFILE_NAME"
 
-# 5. Install Python dependencies
+# 5. Install Python dependencies (includes boto3, rich, aws-cdk-lib)
 just install
 
 # 6. Bootstrap CDK (only needed once per AWS account/region)
 source .venv/bin/activate
-cdk bootstrap aws://YOUR_ACCOUNT_ID/us-east-1
+AWS_PROFILE=YOUR_SSO_PROFILE_NAME cdk bootstrap aws://YOUR_ACCOUNT_ID/us-east-1
 
-# 7. Validate everything looks correct (no AWS changes, just generates templates)
-just synth
-#    Should print a list of stacks with no errors
+# 7. Check status — verifies credentials and shows what's deployed
+just status
 ```
 
 ---

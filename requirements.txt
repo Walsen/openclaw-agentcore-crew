@@ -1,2 +1,8 @@
 aws-cdk-lib==2.188.0
 constructs>=10.0.0,<11.0.0
+boto3==1.38.23
+rich==14.0.0
+boto3==1.38.23
+click==8.1.8
+rich==14.0.0
+pyyaml==6.0.2

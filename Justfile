@@ -11,7 +11,7 @@ default:
 install:
     uv venv --python python3
     uv pip install -r requirements.txt
-    @echo "✓ Dependencies installed. Activate with: source .venv/bin/activate"
+    @echo "✓ Dependencies installed"
 
 # ── CDK ──────────────────────────────────────────────────────────────────
 
@@ -27,53 +27,65 @@ diff:
 
 # Full 3-phase deployment
 deploy:
-    ./scripts/deploy.sh
+    source .venv/bin/activate && python cli.py deploy
 
 # Deploy Phase 1 only (VPC, Security, Guardrails, Observability)
 deploy-phase1:
-    ./scripts/deploy.sh --phase1
+    source .venv/bin/activate && python cli.py deploy --phase 1
 
 # Deploy Phase 2 only (AgentCore Runtime — pulls image from Docker Hub)
 deploy-phase2:
-    ./scripts/deploy.sh --phase2
+    source .venv/bin/activate && python cli.py deploy --phase 2
 
 # Deploy Phase 3 only (Router, Cron, Token Monitoring)
 deploy-phase3:
-    ./scripts/deploy.sh --phase3
+    source .venv/bin/activate && python cli.py deploy --phase 3
 
 # ── Channel Setup ────────────────────────────────────────────────────────
 
 # Set up Telegram webhook and add first user
 setup-telegram:
-    ./scripts/setup-telegram.sh
+    source .venv/bin/activate && python cli.py setup telegram
 
 # Set up Slack app credentials
 setup-slack:
-    ./scripts/setup-slack.sh
+    source .venv/bin/activate && python cli.py setup slack
 
 # Set up WhatsApp Business API
 setup-whatsapp:
-    ./scripts/setup-whatsapp.sh
+    source .venv/bin/activate && python cli.py setup whatsapp
 
 # Set up Discord bot
 setup-discord:
-    ./scripts/setup-discord.sh
+    source .venv/bin/activate && python cli.py setup discord
 
 # ── User Management ──────────────────────────────────────────────────────
 
 # List all registered users
 users:
-    ./scripts/manage-allowlist.sh list
+    source .venv/bin/activate && python cli.py users list
 
 # Add a user: just add-user telegram:123456789 "Alice"
 add-user channel_id display_name="User":
-    ./scripts/manage-allowlist.sh add {{channel_id}} "{{display_name}}"
+    source .venv/bin/activate && python cli.py users add {{channel_id}} "{{display_name}}"
 
 # Remove a user: just remove-user telegram:123456789
 remove-user channel_id:
-    ./scripts/manage-allowlist.sh remove {{channel_id}}
+    source .venv/bin/activate && python cli.py users remove {{channel_id}}
 
 # ── Ops ──────────────────────────────────────────────────────────────────
+
+# Show all stack outputs
+outputs:
+    source .venv/bin/activate && python cli.py outputs
+
+# Show deployment status of all stacks
+status:
+    source .venv/bin/activate && python cli.py status
+
+# List Secrets Manager secrets
+secrets:
+    source .venv/bin/activate && python cli.py secrets
 
 # Tail Router Lambda logs
 logs-router:
@@ -85,28 +97,16 @@ logs-cron:
     aws logs tail /aws/lambda/openclaw-cron --follow \
         --region $(jq -r '.context.region' cdk.json)
 
-# Show all stack outputs
-outputs:
-    #!/usr/bin/env bash
-    REGION=$(jq -r '.context.region' cdk.json)
-    PREFIX=$(jq -r '.context.stack_prefix // "OpenClaw"' cdk.json)
-    for stack in Vpc Security Guardrails Observability AgentCore Router Cron TokenMonitoring; do
-        echo "━━━ ${PREFIX}${stack} ━━━"
-        aws cloudformation describe-stacks \
-            --stack-name "${PREFIX}${stack}" \
-            --query "Stacks[0].Outputs" \
-            --output table \
-            --region "$REGION" 2>/dev/null || echo "  (not deployed)"
-    done
+# ── Teardown ─────────────────────────────────────────────────────────────
 
-# Show what teardown would delete without actually deleting anything
+# Preview what teardown would delete (safe — no changes)
 teardown-dry-run:
-    ./scripts/teardown.sh --dry-run
+    source .venv/bin/activate && python cli.py teardown --dry-run
 
-# Full teardown — removes all AWS resources (interactive, prompts per step)
+# Full interactive teardown — prompts before each step
 teardown:
-    source .venv/bin/activate && ./scripts/teardown.sh
+    source .venv/bin/activate && python cli.py teardown
 
-# Full teardown without prompts — USE WITH CAUTION
+# Force teardown without prompts — USE WITH CAUTION
 teardown-force:
-    source .venv/bin/activate && ./scripts/teardown.sh --force
+    source .venv/bin/activate && python cli.py teardown --force

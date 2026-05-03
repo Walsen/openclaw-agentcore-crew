@@ -240,6 +240,32 @@ def _register_user(channel: str, channel_user_id: str, display_name: str) -> dic
 
 # ── AgentCore invocation ──────────────────────────────────────────────────
 
+def _invoke_and_reply(tenant_id: str, message: str, channel: str,
+                      channel_user_id: str, body: dict) -> None:
+    """Run in a background thread — invoke AgentCore then send reply.
+
+    The Lambda returns 200 to the webhook platform immediately (within ~100ms).
+    This thread continues running and completes before Lambda freezes.
+    Lambda stays alive until all non-daemon threads finish.
+    """
+    response_text = _invoke_agentcore(tenant_id, message)
+
+    if channel == "discord":
+        secret_arn = os.environ.get("DISCORD_SECRET_ARN", "")
+        app_id = ""
+        if secret_arn:
+            try:
+                creds = json.loads(_get_secret(secret_arn))
+                app_id = creds.get("applicationId", "")
+            except Exception:
+                pass
+        interaction_token = body.get("token", "")
+        if app_id and interaction_token:
+            _reply_discord(interaction_token, app_id, response_text)
+    elif channel in REPLY_FUNCS:
+        REPLY_FUNCS[channel](channel_user_id, response_text)
+
+
 def _invoke_agentcore(tenant_id: str, message: str) -> str:
     """Call AgentCore Runtime and return the response text.
 
@@ -472,38 +498,26 @@ def handler(event, context):
 
         logger.info("Routing %s → tenant=%s msg_len=%d", channel, tenant_id, len(message_text))
 
-        # ── Invoke AgentCore → server.py → openclaw ───────────────────────
-        response_text = _invoke_agentcore(tenant_id, message_text)
+        # ── Fire AgentCore call in background, return 200 immediately ─────
+        # Webhook platforms (Telegram, Slack, WhatsApp, Discord) all require
+        # a response within 3-5 seconds or they retry. We return 200 instantly
+        # and let the background thread handle the AgentCore call + reply.
+        # Lambda stays alive until the thread completes (non-daemon thread).
+        import threading
+        t = threading.Thread(
+            target=_invoke_and_reply,
+            args=(tenant_id, message_text, channel, channel_user_id, body),
+            daemon=False,  # non-daemon: Lambda waits for this before freezing
+        )
+        t.start()
 
-        # ── Send reply back to the channel ────────────────────────────────
+        # ── Discord: must return interaction ACK within 3 seconds ─────────
         if channel == "discord":
-            # Discord requires a deferred response within 3s, then a followup.
-            # We send an immediate ACK (type=5) and reply via followup webhook.
-            secret_arn = os.environ.get("DISCORD_SECRET_ARN", "")
-            app_id = ""
-            if secret_arn:
-                try:
-                    creds = json.loads(_get_secret(secret_arn))
-                    app_id = creds.get("applicationId", "")
-                except Exception:
-                    pass
-            interaction_token = body.get("token", "")
-            if app_id and interaction_token:
-                import threading
-                threading.Thread(
-                    target=_reply_discord,
-                    args=(interaction_token, app_id, response_text),
-                    daemon=True,
-                ).start()
-            # Return deferred response immediately so Discord doesn't time out
             return {
                 "statusCode": 200,
                 "body": json.dumps({"type": 5}),  # DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
                 "headers": {"Content-Type": "application/json"},
             }
-
-        elif channel in REPLY_FUNCS:
-            REPLY_FUNCS[channel](channel_user_id, response_text)
 
         return {"statusCode": 200, "body": json.dumps({"status": "ok"})}
 

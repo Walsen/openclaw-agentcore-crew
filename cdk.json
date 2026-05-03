@@ -15,6 +15,7 @@
   "context": {
     "account": "REPLACE_WITH_YOUR_AWS_ACCOUNT_ID",
     "region": "us-east-1",
+    "aws_profile": "REPLACE_WITH_YOUR_SSO_PROFILE_NAME",
     "stack_prefix": "OpenClaw",
     "docker_image": "ffactory/openclaw:latest",
     "default_model_id": "us.anthropic.claude-sonnet-4-20250514-v1:0",
@@ -28,7 +29,7 @@
     "enable_cloudtrail": false,
     "enable_browser": false,
     "channels": ["telegram", "slack", "whatsapp", "discord"],
-    "router_lambda_timeout_seconds": 600,
+    "router_lambda_timeout_seconds": 30,
     "router_lambda_memory_mb": 256,
     "cron_lambda_timeout_seconds": 900,
     "cron_lambda_memory_mb": 256,
