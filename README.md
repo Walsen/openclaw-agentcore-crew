@@ -141,6 +141,29 @@ just diff           # diff deployed vs local
 ## Teardown
 
 ```bash
-just destroy
-# Note: KMS keys and S3 buckets have RETAIN policy — delete manually if needed
+# Preview what will be deleted (safe — no changes)
+just teardown-dry-run
+
+# Full interactive teardown — prompts before each step
+just teardown
+
+# Force teardown without prompts (CI/CD use only)
+just teardown-force
 ```
+
+The teardown script handles everything `cdk destroy` misses:
+
+| Resource | How removed |
+|----------|-------------|
+| AgentCore Runtime + Endpoint | `aws bedrock-agentcore delete-*` |
+| CDK stacks (Phase 3 then 1) | `cdk destroy` per stack |
+| S3 workspace bucket | Emptied (all versions) then deleted |
+| ECR repository | `aws ecr delete-repository --force` |
+| KMS key | Scheduled for deletion (7-day window) |
+| CloudWatch log groups | `aws logs delete-log-group` |
+| Telegram webhook | `deleteWebhook` API call |
+
+**Not removed automatically** (contain sensitive data — delete manually):
+- Secrets Manager secrets (`openclaw/channels/*`) — hold your bot tokens
+- DynamoDB identity table (`openclaw-identity`) — holds user data
+- CDK bootstrap stack (`CDKToolkit`) — shared, keep if reusing the account

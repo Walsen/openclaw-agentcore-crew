@@ -99,6 +99,14 @@ outputs:
             --region "$REGION" 2>/dev/null || echo "  (not deployed)"
     done
 
-# Destroy all stacks (DESTRUCTIVE — prompts for confirmation)
-destroy:
-    source .venv/bin/activate && cdk destroy --all
+# Show what teardown would delete without actually deleting anything
+teardown-dry-run:
+    ./scripts/teardown.sh --dry-run
+
+# Full teardown — removes all AWS resources (interactive, prompts per step)
+teardown:
+    source .venv/bin/activate && ./scripts/teardown.sh
+
+# Full teardown without prompts — USE WITH CAUTION
+teardown-force:
+    source .venv/bin/activate && ./scripts/teardown.sh --force
