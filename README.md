@@ -45,50 +45,158 @@ devbox shell
 uv tool install bedrock-agentcore-toolkit
 ```
 
-## Quick Start
+## Step-by-Step Deployment Guide
+
+### Before you start — one-time setup
 
 ```bash
-# Enter devbox shell
+# 1. Enter the devbox shell (installs all tools automatically)
 devbox shell
 
-# 1. Configure AWS credentials
+# 2. Configure AWS credentials
 aws configure
-export CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
-```
+#    Enter: Access Key ID, Secret Access Key, region (us-east-1), output (json)
 
-```bash
-# 2. Edit cdk.json — set your account ID
-#    "account": "123456789012"
+# 3. Verify you're connected to the right account
+aws sts get-caller-identity
+#    You should see your Account ID, UserId, and Arn
 
-# 3. Install Python dependencies
+# 4. Edit cdk.json — replace the account placeholder with your real account ID
+#    Open cdk.json and change:
+#      "account": "REPLACE_WITH_YOUR_AWS_ACCOUNT_ID"
+#    to your 12-digit AWS account ID from the step above
+
+# 5. Install Python dependencies
 just install
 
-# 4. Bootstrap CDK (first time only)
-source .venv/bin/activate && cdk bootstrap aws://$CDK_DEFAULT_ACCOUNT/us-east-1
+# 6. Bootstrap CDK (only needed once per AWS account/region)
+source .venv/bin/activate
+cdk bootstrap aws://YOUR_ACCOUNT_ID/us-east-1
 
-# 5. Validate CDK
+# 7. Validate everything looks correct (no AWS changes, just generates templates)
 just synth
-
-# 6. Deploy everything
-just deploy
-
-# Or deploy phase by phase:
-just deploy-phase1   # VPC, Security, Guardrails, Observability
-just deploy-phase2   # AgentCore Runtime (pulls image from Docker Hub)
-just deploy-phase3   # Router, Cron, Token Monitoring
+#    Should print a list of stacks with no errors
 ```
 
-```bash
-# 7. Set up channels
-just setup-telegram
-just setup-slack
-just setup-whatsapp
-just setup-discord
+---
 
-# 8. Manage users
+### Phase 1 — Foundation (~10 min, no manual steps)
+
+Deploys the AWS networking and security infrastructure. Nothing to configure — just run it.
+
+```bash
+just deploy-phase1
+```
+
+**What gets created:**
+- `OpenClawVpc` — VPC with 2 availability zones, private/public subnets, NAT gateway
+- `OpenClawSecurity` — KMS encryption key, empty Secrets Manager secrets for each channel
+- `OpenClawGuardrails` — Bedrock content safety filters (blocks harmful content, redacts PII)
+- `OpenClawObservability` — CloudWatch dashboard and SNS alarm topic
+
+**Phase 1 ends when:** the terminal prints `✓ Phase 1 complete` and all 4 stacks show `CREATE_COMPLETE` in the AWS Console under CloudFormation.
+
+---
+
+### Phase 2 — AgentCore Runtime (~15 min, one manual step after)
+
+Pulls `ffactory/openclaw:latest` from Docker Hub, pushes it to your ECR, and registers it as an AgentCore Runtime. **Docker must be running on your machine.**
+
+```bash
+just deploy-phase2
+```
+
+**What gets created:**
+- ECR repository `openclaw-runtime` in your account
+- The Docker image pushed to that ECR repo
+- An AgentCore Runtime (the serverless microVM environment)
+
+**⚠ Manual step after Phase 2 completes:**
+
+The CLI will print something like:
+```
+Runtime created: openclaw_agent-a1b2c3d4e5
+```
+
+Copy that ID and add it to `cdk.json`:
+```json
+"runtime_id": "openclaw_agent-a1b2c3d4e5"
+```
+
+**Phase 2 ends when:** you've added `runtime_id` to `cdk.json`.
+
+---
+
+### Phase 3 — Application (~8 min, no manual steps)
+
+Deploys the Lambda functions, API Gateway, and DynamoDB tables that connect your messaging channels to the AgentCore Runtime.
+
+```bash
+just deploy-phase3
+```
+
+**What gets created:**
+- `OpenClawAgentCore` — IAM role, S3 bucket for user workspaces, security group
+- `OpenClawRouter` — Router Lambda + API Gateway (this is your webhook URL), DynamoDB identity table
+- `OpenClawCron` — EventBridge Scheduler + Cron Lambda (for scheduled reminders)
+- `OpenClawTokenMonitoring` — Usage tracking and daily budget enforcement
+
+**Phase 3 ends when:** the terminal prints your API URL:
+```
+API URL: https://abc123.execute-api.us-east-1.amazonaws.com
+```
+
+Save that URL — you'll need it for the channel setup steps.
+
+---
+
+### Channel Setup — connect your messaging apps
+
+Run the setup script for each channel you want to use. Each script walks you through the steps interactively.
+
+```bash
+just setup-telegram   # needs a bot token from @BotFather
+just setup-slack      # needs a Slack app with bot token + signing secret
+just setup-whatsapp   # needs a Meta Business account + WhatsApp API token
+just setup-discord    # needs a Discord application + bot token + public key
+```
+
+Each script will:
+1. Ask for your credentials
+2. Store them in Secrets Manager (encrypted with your KMS key)
+3. Register the webhook URL with the platform
+4. Add you to the user allowlist
+
+---
+
+### Add more users
+
+```bash
+# Add a user by their platform ID
 just add-user telegram:123456789 "Alice"
 just add-user slack:U0123ABCD "Bob"
+just add-user whatsapp:15551234567 "Carol"
+just add-user discord:987654321098 "Dave"
+
+# See all registered users
 just users
+```
+
+Get Telegram user IDs from [@userinfobot](https://t.me/userinfobot).
+Get Slack user IDs from the Slack member profile URL or the API.
+
+---
+
+### Verify it's working
+
+Send a message to your bot on any connected channel. The first message triggers a cold start (~10-15 seconds). Subsequent messages in the same session are fast.
+
+```bash
+# Watch the Router Lambda logs in real time
+just logs-router
+
+# See all deployed stack outputs (URLs, table names, etc.)
+just outputs
 ```
 
 ## CDK Stacks
