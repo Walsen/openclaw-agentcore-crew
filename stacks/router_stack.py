@@ -73,6 +73,9 @@ class RouterStack(cdk.Stack):
             projection_type=dynamodb.ProjectionType.ALL,
         )
 
+        # runtime_id is populated in cdk.json after Phase 2 completes
+        runtime_id = self.node.try_get_context("runtime_id") or ""
+
         # --- Router Lambda ------------------------------------------------
         self.router_function = lambda_.Function(
             self,
@@ -80,7 +83,16 @@ class RouterStack(cdk.Stack):
             function_name=f"{prefix.lower()}-router",
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="index.handler",
-            code=lambda_.Code.from_asset("lambda/router"),
+            code=lambda_.Code.from_asset(
+                "lambda/router",
+                bundling=cdk.BundlingOptions(
+                    image=lambda_.Runtime.PYTHON_3_12.bundling_image,
+                    command=[
+                        "bash", "-c",
+                        "pip install -r requirements.txt -t /asset-output && cp -r . /asset-output",
+                    ],
+                ),
+            ),
             timeout=cdk.Duration.seconds(timeout_s),
             memory_size=memory_mb,
             architecture=lambda_.Architecture.ARM_64,
@@ -91,6 +103,9 @@ class RouterStack(cdk.Stack):
                 "CHANNELS": ",".join(channels),
                 "MAX_USERS": str(max_users),
                 "REGISTRATION_OPEN": str(registration_open).lower(),
+                "RUNTIME_ID": runtime_id,
+                # Per-channel secret ARNs — router uses these to verify
+                # signatures and to send replies back to each platform
                 **{
                     f"{ch.upper()}_SECRET_ARN": secret.secret_arn
                     for ch, secret in security_stack.channel_secrets.items()
