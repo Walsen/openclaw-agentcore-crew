@@ -112,19 +112,7 @@ just deploy-phase2
 - The Docker image pushed to that ECR repo
 - An AgentCore Runtime (the serverless microVM environment)
 
-**⚠ Manual step after Phase 2 completes:**
-
-The CLI will print something like:
-```
-Runtime created: openclaw_agent-a1b2c3d4e5
-```
-
-Copy that ID and add it to `cdk.json`:
-```json
-"runtime_id": "openclaw_agent-a1b2c3d4e5"
-```
-
-**Phase 2 ends when:** you've added `runtime_id` to `cdk.json`.
+**Phase 2 ends when:** the terminal prints `✓ Phase 2 complete`. The `runtime_id` is saved to `cdk.json` automatically — no manual step needed.
 
 ---
 

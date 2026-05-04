@@ -252,54 +252,103 @@ def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: s
     _run_subprocess(["docker", "push", f"{ecr_repo}:latest"])
     console.print("[green]✓ Image pushed to ECR[/green]")
 
-    # Write .bedrock_agentcore.yaml
-    yaml_path = PROJECT_ROOT / ".bedrock_agentcore.yaml"
-    subnets_yaml = ", ".join(subnets)
-    yaml_content = f"""agent_runtime:
-  name: openclaw-agent
-  image: {ecr_repo}:latest
-  platform: linux/arm64
-  role_arn: {role_arn}
-  network:
-    mode: VPC
-    security_groups:
-      - {sg_id}
-    subnets: [{subnets_yaml}]
-  lifecycle:
-    idle_timeout: {config['session_idle_timeout']}
-    max_lifetime: {config['session_max_lifetime']}
-  environment:
-    S3_BUCKET: {config['stack_prefix'].lower()}-workspaces-{account}-{region}
-    STACK_NAME: {config['stack_prefix']}
-    AWS_REGION: {region}
-    BEDROCK_MODEL_ID: {config['default_model_id']}
-"""
-    yaml_path.write_text(yaml_content)
-    log.info("Written: %s", yaml_path)
+    # Build environment variables for the container
+    agentcore_env = {
+        "S3_BUCKET": f"{config['stack_prefix'].lower()}-workspaces-{account}-{region}",
+        "STACK_NAME": config["stack_prefix"],
+        "BEDROCK_MODEL_ID": config["default_model_id"],
+    }
+    # Add guardrail ID if available from deployed stack
+    cfn_client = session.client("cloudformation")
+    guardrail_id = get_stack_output(cfn_client, f"{prefix}Guardrails", "GuardrailId") or ""
+    if guardrail_id:
+        agentcore_env["GUARDRAIL_ID"] = guardrail_id
+        agentcore_env["GUARDRAIL_VERSION"] = "DRAFT"
 
-    # Deploy via agentcore CLI
-    agentcore_bin = _find_executable("agentcore")
-    if not agentcore_bin:
-        console.print("[yellow]⚠ agentcore CLI not found.[/yellow]")
-        console.print("  Install with: [bold]uv tool install bedrock-agentcore-toolkit[/bold]")
-        console.print(f"  Then run: [bold]agentcore deploy --config {yaml_path}[/bold]")
-        console.print("\n  After deployment, add the runtime_id to cdk.json:")
-        console.print('  [bold]"runtime_id": "openclaw_agent-XXXXXXXXXX"[/bold]')
-        return
+    # Deploy via boto3 bedrock-agentcore-control (no separate CLI needed)
+    log.info("Deploying AgentCore Runtime via boto3 bedrock-agentcore-control...")
+    agentcore_control = session.client("bedrock-agentcore-control", region_name=region)
 
-    log.info("Deploying AgentCore Runtime...")
-    result = subprocess.run(
-        [agentcore_bin, "deploy", "--config", str(yaml_path)],
-        capture_output=False,
-        cwd=PROJECT_ROOT,
-    )
-    if result.returncode != 0:
-        console.print("[red]✗ agentcore deploy failed[/red]")
-        sys.exit(1)
+    existing_runtime_id = config.get("runtime_id", "")
+    if existing_runtime_id and existing_runtime_id not in ("", "null", "REPLACE_WITH_RUNTIME_ID"):
+        # Update existing runtime with new image
+        log.info("Updating existing runtime: %s", existing_runtime_id)
+        agentcore_control.update_agent_runtime(
+            agentRuntimeId=existing_runtime_id,
+            agentRuntimeArtifact={
+                "containerConfiguration": {"containerUri": f"{ecr_repo}:latest"}
+            },
+            roleArn=role_arn,
+            networkConfiguration={
+                "networkMode": "VPC",
+                "networkModeConfig": {
+                    "securityGroups": [sg_id],
+                    "subnets": subnets,
+                },
+            },
+            lifecycleConfiguration={
+                "idleRuntimeSessionTimeout": config["session_idle_timeout"],
+                "maxLifetime": config["session_max_lifetime"],
+            },
+            environmentVariables=agentcore_env,
+        )
+        console.print(Panel(
+            f"[bold green]✓ Phase 2 complete![/bold green]\n\n"
+            f"Runtime updated: [bold]{existing_runtime_id}[/bold]\n"
+            "New sessions will use the updated image automatically.\n\n"
+            "Run [bold]just deploy-phase3[/bold] to continue.",
+            border_style="green",
+        ))
+    else:
+        # Create new runtime
+        resp = agentcore_control.create_agent_runtime(
+            agentRuntimeName="openclaw-agent",
+            agentRuntimeArtifact={
+                "containerConfiguration": {"containerUri": f"{ecr_repo}:latest"}
+            },
+            roleArn=role_arn,
+            networkConfiguration={
+                "networkMode": "VPC",
+                "networkModeConfig": {
+                    "securityGroups": [sg_id],
+                    "subnets": subnets,
+                },
+            },
+            lifecycleConfiguration={
+                "idleRuntimeSessionTimeout": config["session_idle_timeout"],
+                "maxLifetime": config["session_max_lifetime"],
+            },
+            environmentVariables=agentcore_env,
+        )
+        new_runtime_id = resp["agentRuntimeId"]
+        console.print(f"[green]✓ AgentCore Runtime created: {new_runtime_id}[/green]")
 
-    console.print("[green]✓ Phase 2 complete[/green]")
-    console.print("\n[yellow]⚠ Add the runtime_id to cdk.json before deploying Phase 3:[/yellow]")
-    console.print('  [bold]"runtime_id": "openclaw_agent-XXXXXXXXXX"[/bold]')
+        # Poll until READY (up to 5 minutes)
+        log.info("Waiting for runtime to become READY...")
+        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
+                      transient=True) as progress:
+            task = progress.add_task("Waiting for runtime...", total=None)
+            for _ in range(60):
+                time.sleep(5)
+                status_resp = agentcore_control.get_agent_runtime(agentRuntimeId=new_runtime_id)
+                status = status_resp.get("status", "")
+                progress.update(task, description=f"Runtime status: {status}")
+                if status == "READY":
+                    break
+                if "FAILED" in status:
+                    reason = status_resp.get("failureReason", "unknown")
+                    console.print(f"[red]✗ Runtime creation failed ({status}): {reason}[/red]")
+                    sys.exit(1)
+
+        # Automatically save runtime_id to cdk.json — no manual step needed
+        save_config_value("runtime_id", new_runtime_id)
+        console.print(Panel(
+            f"[bold green]✓ Phase 2 complete![/bold green]\n\n"
+            f"Runtime ID: [bold]{new_runtime_id}[/bold]\n"
+            "Saved to cdk.json automatically.\n\n"
+            "Run [bold]just deploy-phase3[/bold] to continue.",
+            border_style="green",
+        ))
 
 
 def _deploy_phase3(config: dict, prefix: str) -> None:
