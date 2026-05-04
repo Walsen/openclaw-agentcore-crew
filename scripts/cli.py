@@ -242,19 +242,11 @@ def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: s
         ])
         console.print("[green]✓ Image built from local source[/green]")
     else:
-        # Pull from Docker Hub, then build a thin wrapper that overrides the entrypoint
+        # Pull from Docker Hub directly (fixes are now in the official image)
         log.info("Pulling %s (linux/arm64)...", docker_image)
         _run_subprocess(["docker", "pull", "--platform", "linux/arm64", docker_image])
-        log.info("Building AgentCore wrapper image...")
-        _run_subprocess([
-            "docker", "buildx", "build",
-            "--platform", "linux/arm64",
-            "--load",
-            "-t", f"{ecr_repo}:latest",
-            "-f", str(PROJECT_ROOT / "Dockerfile.agentcore"),
-            str(PROJECT_ROOT),
-        ])
-        console.print("[green]✓ Wrapper image built[/green]")
+        log.info("Tagging for ECR...")
+        _run_subprocess(["docker", "tag", docker_image, f"{ecr_repo}:latest"])
 
     log.info("Pushing to ECR...")
     _run_subprocess(["docker", "push", f"{ecr_repo}:latest"])

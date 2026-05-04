@@ -17,6 +17,12 @@ install:
 
 # ── CDK ──────────────────────────────────────────────────────────────────
 
+# Bootstrap CDK in the target account/region (run once per account)
+bootstrap:
+    JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1 AWS_PROFILE=$(jq -r '.context.aws_profile' cdk.json) \
+    VIRTUAL_ENV="$(pwd)/.venv" PATH="$(pwd)/.venv/bin:$PATH" \
+    cdk bootstrap aws://$(jq -r '.context.account' cdk.json)/$(jq -r '.context.region' cdk.json)
+
 # Synthesize CloudFormation templates (validates the CDK code)
 synth:
     JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION=1 AWS_PROFILE=$(jq -r '.context.aws_profile' cdk.json) \
@@ -81,6 +87,10 @@ setup-discord:
 
 # List all registered users
 users:
+    {{_cli}} users list
+
+# Alias for users
+users-list:
     {{_cli}} users list
 
 # Add a user: just add-user telegram:123456789 "Alice"
