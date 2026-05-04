@@ -135,6 +135,8 @@ def run_cdk(args: list[str], config: dict, dry_run: bool = False) -> None:
     env = os.environ.copy()
     env["AWS_DEFAULT_REGION"] = region
     env["JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION"] = "1"
+    env["VIRTUAL_ENV"] = str(PROJECT_ROOT / ".venv")
+    env["PATH"] = str(PROJECT_ROOT / ".venv" / "bin") + os.pathsep + env.get("PATH", "")
     if profile and profile not in ("None", "REPLACE_WITH_YOUR_SSO_PROFILE_NAME"):
         env["AWS_PROFILE"] = profile
 
