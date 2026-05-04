@@ -1,7 +1,9 @@
 {
   "app": "python3 app.py",
   "watch": {
-    "include": ["**"],
+    "include": [
+      "**"
+    ],
     "exclude": [
       "README.md",
       "cdk*.json",
@@ -18,7 +20,7 @@
     "aws_profile": "walsen",
     "stack_prefix": "OpenClaw",
     "docker_image": "ffactory/openclaw:latest",
-    "default_model_id": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+    "default_model_id": "us.anthropic.claude-sonnet-4-6",
     "session_idle_timeout": 1800,
     "session_max_lifetime": 28800,
     "workspace_sync_interval_seconds": 300,
@@ -28,8 +30,13 @@
     "guardrails_pii_action": "ANONYMIZE",
     "enable_cloudtrail": false,
     "enable_browser": false,
-    "channels": ["telegram", "slack", "whatsapp", "discord"],
-    "router_lambda_timeout_seconds": 30,
+    "channels": [
+      "telegram",
+      "slack",
+      "whatsapp",
+      "discord"
+    ],
+    "router_lambda_timeout_seconds": 60,
     "router_lambda_memory_mb": 256,
     "cron_lambda_timeout_seconds": 900,
     "cron_lambda_memory_mb": 256,
@@ -39,6 +46,7 @@
     "user_files_ttl_days": 365,
     "cron_lead_time_minutes": 5,
     "cloudwatch_log_retention_days": 30,
-    "max_users": 10
+    "max_users": 10,
+    "runtime_id": "openclaw_agent-mF4Hq3HJz8"
   }
 }

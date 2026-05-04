@@ -35,6 +35,7 @@ dynamodb = boto3.resource("dynamodb")
 
 IDENTITY_TABLE = os.environ["IDENTITY_TABLE"]
 RUNTIME_ID = os.environ.get("RUNTIME_ID", "")          # set after Phase 2
+RUNTIME_ARN = os.environ.get("RUNTIME_ARN", "")        # full ARN for invoke_agent_runtime
 STACK_NAME = os.environ.get("STACK_NAME", "OpenClaw")
 CHANNELS = os.environ.get("CHANNELS", "telegram").split(",")
 MAX_USERS = int(os.environ.get("MAX_USERS", "10"))
@@ -238,13 +239,6 @@ def _register_user(channel: str, channel_user_id: str, display_name: str) -> dic
     return item
 
 
-REPLY_FUNCS = {
-    "telegram":  _reply_telegram,
-    "slack":     _reply_slack,
-    "whatsapp":  _reply_whatsapp,
-}
-
-
 # ── AgentCore invocation ──────────────────────────────────────────────────
 
 def _invoke_and_reply(tenant_id: str, message: str, channel: str,
@@ -257,7 +251,13 @@ def _invoke_and_reply(tenant_id: str, message: str, channel: str,
     """
     response_text = _invoke_agentcore(tenant_id, message)
 
-    if channel == "discord":
+    if channel == "telegram":
+        _reply_telegram(channel_user_id, response_text)
+    elif channel == "slack":
+        _reply_slack(channel_user_id, response_text)
+    elif channel == "whatsapp":
+        _reply_whatsapp(channel_user_id, response_text)
+    elif channel == "discord":
         secret_arn = os.environ.get("DISCORD_SECRET_ARN", "")
         app_id = ""
         if secret_arn:
@@ -269,8 +269,6 @@ def _invoke_and_reply(tenant_id: str, message: str, channel: str,
         interaction_token = body.get("token", "")
         if app_id and interaction_token:
             _reply_discord(interaction_token, app_id, response_text)
-    elif channel in REPLY_FUNCS:
-        REPLY_FUNCS[channel](channel_user_id, response_text)
 
 
 def _invoke_agentcore(tenant_id: str, message: str) -> str:
@@ -282,20 +280,33 @@ def _invoke_agentcore(tenant_id: str, message: str) -> str:
 
     Returns the "response" field from the JSON body.
     """
-    if not RUNTIME_ID:
-        logger.error("RUNTIME_ID not set — Phase 2 not yet deployed")
+    if not RUNTIME_ARN and not RUNTIME_ID:
+        logger.error("RUNTIME_ARN not set — Phase 2 not yet deployed")
         return "I'm not fully deployed yet. Please check back soon."
+
+    # Use ARN directly (preferred) or build it from the ID
+    runtime_arn = RUNTIME_ARN or (
+        f"arn:aws:bedrock-agentcore:{AWS_REGION}:{os.environ.get('AWS_ACCOUNT_ID', '')}:runtime/{RUNTIME_ID}"
+    )
+
+    # runtimeSessionId must be ≥33 chars — pad with zeros if needed
+    session_id = tenant_id.ljust(33, "0")
 
     try:
         resp = agentcore_client.invoke_agent_runtime(
-            agentRuntimeId=RUNTIME_ID,
-            qualifier="DEFAULT",
-            runtimeSessionId=tenant_id,
+            agentRuntimeArn=runtime_arn,
+            runtimeSessionId=session_id,
+            contentType="application/json",
+            accept="application/json",
             payload=json.dumps({"prompt": message}).encode(),
         )
         # Response is a streaming body
         body_bytes = resp["response"].read()
+        logger.info("AgentCore raw response (%d bytes): %s", len(body_bytes), body_bytes[:500])
         data = json.loads(body_bytes)
+        if data.get("error"):
+            logger.error("AgentCore container error: %s", data["error"])
+            return f"Agent error: {data['error']}"
         return data.get("response", "(no response)")
     except ClientError as e:
         code = e.response["Error"]["Code"]
@@ -498,26 +509,36 @@ def handler(event, context):
 
         logger.info("Routing %s → tenant=%s msg_len=%d", channel, tenant_id, len(message_text))
 
-        # ── Fire AgentCore call in background, return 200 immediately ─────
-        # Webhook platforms (Telegram, Slack, WhatsApp, Discord) all require
-        # a response within 3-5 seconds or they retry. We return 200 instantly
-        # and let the background thread handle the AgentCore call + reply.
-        # Lambda stays alive until the thread completes (non-daemon thread).
-        import threading
-        t = threading.Thread(
-            target=_invoke_and_reply,
-            args=(tenant_id, message_text, channel, channel_user_id, body),
-            daemon=False,  # non-daemon: Lambda waits for this before freezing
-        )
-        t.start()
-
-        # ── Discord: must return interaction ACK within 3 seconds ─────────
+        # ── Invoke AgentCore and send reply synchronously ─────────────────
+        # Lambda freezes the process immediately after handler returns, so
+        # background threads are unreliable. We call AgentCore synchronously
+        # within the 30s Lambda timeout. Telegram/Slack/WhatsApp all tolerate
+        # webhook responses up to 30s. Discord needs a 3s ACK so we use the
+        # deferred response pattern for that channel only.
         if channel == "discord":
+            # Discord: return ACK immediately, reply via followup webhook
+            import threading
+            t = threading.Thread(
+                target=_invoke_and_reply,
+                args=(tenant_id, message_text, channel, channel_user_id, body),
+                daemon=False,
+            )
+            t.start()
+            t.join(timeout=25)  # wait up to 25s before Lambda returns
             return {
                 "statusCode": 200,
-                "body": json.dumps({"type": 5}),  # DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE
+                "body": json.dumps({"type": 5}),
                 "headers": {"Content-Type": "application/json"},
             }
+
+        # For all other channels: invoke synchronously then reply
+        response_text = _invoke_agentcore(tenant_id, message_text)
+        if channel == "telegram":
+            _reply_telegram(channel_user_id, response_text)
+        elif channel == "slack":
+            _reply_slack(channel_user_id, response_text)
+        elif channel == "whatsapp":
+            _reply_whatsapp(channel_user_id, response_text)
 
         return {"statusCode": 200, "body": json.dumps({"status": "ok"})}
 

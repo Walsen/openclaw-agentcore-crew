@@ -191,21 +191,17 @@ def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: s
     console.print("\n[bold cyan]━━━ Phase 2: AgentCore Runtime ━━━[/bold cyan]")
     cfn = session.client("cloudformation")
 
-    # Ensure AgentCore stack is deployed first (needed for role ARN + SG)
+    # Ensure AgentCore stack is deployed first (needed for execution role ARN)
     agentcore_stack = f"{prefix}AgentCore"
     if not stack_exists(cfn, agentcore_stack):
         log.info("%s not yet deployed — deploying it first", agentcore_stack)
         run_cdk(["deploy", agentcore_stack, "--require-approval", "never"], config)
 
     role_arn = get_stack_output(cfn, agentcore_stack, "ExecutionRoleArn")
-    sg_id = get_stack_output(cfn, agentcore_stack, "SecurityGroupId")
-    subnets_raw = get_stack_output(cfn, agentcore_stack, "PrivateSubnetIds")
-
-    if not role_arn or not sg_id or not subnets_raw:
-        console.print(f"[red]✗ Could not read outputs from {agentcore_stack}[/red]")
+    if not role_arn:
+        console.print(f"[red]✗ Could not read ExecutionRoleArn from {agentcore_stack}[/red]")
         sys.exit(1)
 
-    subnets = [s.strip() for s in subnets_raw.split(",")]
     ecr_repo = f"{account}.dkr.ecr.{region}.amazonaws.com/openclaw-runtime"
     docker_image = config["docker_image"]
 
@@ -238,17 +234,27 @@ def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: s
             sys.exit(1)
         log.info("Building image from %s (linux/arm64)...", openclaw_dir)
         _run_subprocess([
-            "docker", "build",
+            "docker", "buildx", "build",
             "--platform", "linux/arm64",
+            "--load",
             "-t", f"{ecr_repo}:latest",
             str(openclaw_dir),
         ])
         console.print("[green]✓ Image built from local source[/green]")
     else:
+        # Pull from Docker Hub, then build a thin wrapper that overrides the entrypoint
         log.info("Pulling %s (linux/arm64)...", docker_image)
         _run_subprocess(["docker", "pull", "--platform", "linux/arm64", docker_image])
-        log.info("Tagging for ECR...")
-        _run_subprocess(["docker", "tag", docker_image, f"{ecr_repo}:latest"])
+        log.info("Building AgentCore wrapper image...")
+        _run_subprocess([
+            "docker", "buildx", "build",
+            "--platform", "linux/arm64",
+            "--load",
+            "-t", f"{ecr_repo}:latest",
+            "-f", str(PROJECT_ROOT / "Dockerfile.agentcore"),
+            str(PROJECT_ROOT),
+        ])
+        console.print("[green]✓ Wrapper image built[/green]")
 
     log.info("Pushing to ECR...")
     _run_subprocess(["docker", "push", f"{ecr_repo}:latest"])
@@ -259,6 +265,12 @@ def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: s
         "S3_BUCKET": f"{config['stack_prefix'].lower()}-workspaces-{account}-{region}",
         "STACK_NAME": config["stack_prefix"],
         "BEDROCK_MODEL_ID": config["default_model_id"],
+        "AWS_REGION": region,
+        "AWS_DEFAULT_REGION": region,
+        # Skip SSM/DynamoDB calls that require extra permissions and slow startup.
+        # Workspace assembly happens on first invocation via server.py instead.
+        "OPENCLAW_SKIP_ONBOARDING": "1",
+        "OPENCLAW_SKIP_CRON": "1",
     }
     # Add guardrail ID if available from deployed stack
     cfn_client = session.client("cloudformation")
@@ -281,13 +293,7 @@ def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: s
                 "containerConfiguration": {"containerUri": f"{ecr_repo}:latest"}
             },
             roleArn=role_arn,
-            networkConfiguration={
-                "networkMode": "VPC",
-                "networkModeConfig": {
-                    "securityGroups": [sg_id],
-                    "subnets": subnets,
-                },
-            },
+            networkConfiguration={"networkMode": "PUBLIC"},
             lifecycleConfiguration={
                 "idleRuntimeSessionTimeout": config["session_idle_timeout"],
                 "maxLifetime": config["session_max_lifetime"],
@@ -304,18 +310,12 @@ def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: s
     else:
         # Create new runtime
         resp = agentcore_control.create_agent_runtime(
-            agentRuntimeName="openclaw-agent",
+            agentRuntimeName="openclaw_agent",
             agentRuntimeArtifact={
                 "containerConfiguration": {"containerUri": f"{ecr_repo}:latest"}
             },
             roleArn=role_arn,
-            networkConfiguration={
-                "networkMode": "VPC",
-                "networkModeConfig": {
-                    "securityGroups": [sg_id],
-                    "subnets": subnets,
-                },
-            },
+            networkConfiguration={"networkMode": "PUBLIC"},
             lifecycleConfiguration={
                 "idleRuntimeSessionTimeout": config["session_idle_timeout"],
                 "maxLifetime": config["session_max_lifetime"],
@@ -680,10 +680,15 @@ def _setup_telegram(session, sm, cfn, api_url, region, prefix):
     except sm.exceptions.ResourceNotFoundException:
         pass
 
-    if not token or token == "null":
-        console.print("\n[yellow]No Telegram bot token found in Secrets Manager.[/yellow]")
+    import re
+    _tg_token_re = re.compile(r"^\d+:[\w-]{35,}$")
+    if not token or token == "null" or not _tg_token_re.match(token):
+        if token and token not in ("null", ""):
+            console.print(f"\n[yellow]Existing secret doesn't look like a valid Telegram token.[/yellow]")
+        else:
+            console.print("\n[yellow]No Telegram bot token found in Secrets Manager.[/yellow]")
         console.print("  1. Talk to [bold]@BotFather[/bold] on Telegram to create a bot")
-        console.print("  2. Copy the bot token\n")
+        console.print("  2. Copy the bot token (format: 1234567890:ABCdef...)\n")
         token = Prompt.ask("Enter your bot token")
         sm.update_secret(SecretId="openclaw/channels/telegram", SecretString=token)
         console.print("[green]✓ Token stored in Secrets Manager[/green]")
@@ -703,8 +708,9 @@ def _setup_telegram(session, sm, cfn, api_url, region, prefix):
         log.error("Failed to register webhook: %s", e)
 
     # Add first user
-    console.print("\nGet your Telegram user ID from [bold]@userinfobot[/bold]")
-    tg_user_id = Prompt.ask("Your Telegram user ID")
+    console.print("\nGet your numeric Telegram user ID from [bold]@userinfobot[/bold]")
+    console.print("[yellow]Note: your user ID is a number like 123456789, NOT your username.[/yellow]")
+    tg_user_id = Prompt.ask("Your Telegram user ID (numeric)")
     display_name = Prompt.ask("Your display name", default="Admin")
     _add_user_to_table(session, cfn, f"{prefix}Router", region, "telegram", tg_user_id, display_name)
 

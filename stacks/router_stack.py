@@ -36,7 +36,7 @@ class RouterStack(cdk.Stack):
 
         prefix = self.node.try_get_context("stack_prefix") or "OpenClaw"
         channels = self.node.try_get_context("channels") or ["telegram"]
-        timeout_s = self.node.try_get_context("router_lambda_timeout_seconds") or 30
+        timeout_s = self.node.try_get_context("router_lambda_timeout_seconds") or 60
         memory_mb = self.node.try_get_context("router_lambda_memory_mb") or 256
         max_users = self.node.try_get_context("max_users") or 10
         registration_open = self.node.try_get_context("registration_open") or False
@@ -71,6 +71,10 @@ class RouterStack(cdk.Stack):
 
         # runtime_id is populated in cdk.json after Phase 2 completes
         runtime_id = self.node.try_get_context("runtime_id") or ""
+        runtime_arn = (
+            f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:runtime/{runtime_id}"
+            if runtime_id else ""
+        )
 
         # --- Router Lambda log group --------------------------------------
         router_log_group = logs.LogGroup(
@@ -100,19 +104,13 @@ class RouterStack(cdk.Stack):
                 "MAX_USERS": str(max_users),
                 "REGISTRATION_OPEN": str(registration_open).lower(),
                 "RUNTIME_ID": runtime_id,
-                # Secret ARNs use predictable names set by SecurityStack.
-                # Using ARN patterns avoids cross-stack object references.
+                "RUNTIME_ARN": runtime_arn,
+                # Secret names — use the name directly, not a wildcard ARN
                 **{
-                    f"{ch.upper()}_SECRET_ARN": (
-                        f"arn:aws:secretsmanager:{self.region}:{self.account}"
-                        f":secret:openclaw/channels/{ch}-*"
-                    )
+                    f"{ch.upper()}_SECRET_ARN": f"openclaw/channels/{ch}"
                     for ch in channels
                 },
-                "WEBHOOK_SECRET_ARN": (
-                    f"arn:aws:secretsmanager:{self.region}:{self.account}"
-                    ":secret:openclaw/webhook-secret-*"
-                ),
+                "WEBHOOK_SECRET_ARN": "openclaw/webhook-secret",
             },
             log_group=router_log_group,
         )

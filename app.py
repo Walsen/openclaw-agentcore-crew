@@ -79,7 +79,6 @@ observability_stack = ObservabilityStack(
 agentcore_stack = AgentCoreStack(
     app,
     f"{prefix}AgentCore",
-    vpc_stack=vpc_stack,
     guardrails_stack=guardrails_stack,
     env=env,
     description="OpenClaw — AgentCore IAM, S3 workspace, Workload Identity",

@@ -23,6 +23,9 @@ def add_vpc_endpoints(vpc: ec2.Vpc) -> None:
         ("KmsEndpoint", ec2.InterfaceVpcEndpointAwsService.KMS),
         ("LogsEndpoint", ec2.InterfaceVpcEndpointAwsService.CLOUDWATCH_LOGS),
         ("BedrockEndpoint", ec2.InterfaceVpcEndpointAwsService.BEDROCK_RUNTIME),
+        # Required by AgentCore Runtime in VPC mode to pull container images
+        ("EcrDockerEndpoint", ec2.InterfaceVpcEndpointAwsService.ECR_DOCKER),
+        ("EcrApiEndpoint", ec2.InterfaceVpcEndpointAwsService.ECR),
     ]
 
     for endpoint_id, service in interface_services:
