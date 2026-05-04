@@ -159,12 +159,13 @@ def cmd_deploy(args: argparse.Namespace) -> None:
     region = config["region"]
     prefix = config.get("stack_prefix", "OpenClaw")
     phase = args.phase  # None = all
+    use_local = getattr(args, "local", False)
 
     console.print(Panel(
         f"[bold]OpenClaw AgentCore Deployment[/bold]\n"
         f"Account: {account}\n"
         f"Region:  {region}\n"
-        f"Image:   {config['docker_image']}\n"
+        f"Image:   {'local build (openclaw/)' if use_local else config['docker_image']}\n"
         f"Profile: {config.get('aws_profile', '(default)')}",
         border_style="blue",
     ))
@@ -172,7 +173,7 @@ def cmd_deploy(args: argparse.Namespace) -> None:
     if phase in (None, "1"):
         _deploy_phase1(config, prefix)
     if phase in (None, "2"):
-        _deploy_phase2(config, session, account, region, prefix)
+        _deploy_phase2(config, session, account, region, prefix, use_local=use_local)
     if phase in (None, "3"):
         _deploy_phase3(config, prefix)
 
@@ -184,7 +185,7 @@ def _deploy_phase1(config: dict, prefix: str) -> None:
     console.print("[green]✓ Phase 1 complete[/green]")
 
 
-def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: str, prefix: str) -> None:
+def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: str, prefix: str, use_local: bool = False) -> None:
     console.print("\n[bold cyan]━━━ Phase 2: AgentCore Runtime ━━━[/bold cyan]")
     cfn = session.client("cloudformation")
 
@@ -219,7 +220,7 @@ def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: s
         )
         console.print("[green]✓ ECR repository created[/green]")
 
-    # Docker login, pull, tag, push
+    # Docker login to ECR
     log.info("Authenticating Docker with ECR...")
     token = ecr.get_authorization_token()["authorizationData"][0]["authorizationToken"]
     import base64
@@ -227,11 +228,27 @@ def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: s
     _run_subprocess(["docker", "login", "--username", username, "--password-stdin",
                      ecr_repo], input_text=password)
 
-    log.info("Pulling %s (linux/arm64)...", docker_image)
-    _run_subprocess(["docker", "pull", "--platform", "linux/arm64", docker_image])
+    if use_local:
+        # Build from local openclaw/ directory
+        openclaw_dir = PROJECT_ROOT.parent / "openclaw"
+        if not openclaw_dir.exists():
+            console.print(f"[red]✗ openclaw/ directory not found at {openclaw_dir}[/red]")
+            sys.exit(1)
+        log.info("Building image from %s (linux/arm64)...", openclaw_dir)
+        _run_subprocess([
+            "docker", "build",
+            "--platform", "linux/arm64",
+            "-t", f"{ecr_repo}:latest",
+            str(openclaw_dir),
+        ])
+        console.print("[green]✓ Image built from local source[/green]")
+    else:
+        log.info("Pulling %s (linux/arm64)...", docker_image)
+        _run_subprocess(["docker", "pull", "--platform", "linux/arm64", docker_image])
+        log.info("Tagging for ECR...")
+        _run_subprocess(["docker", "tag", docker_image, f"{ecr_repo}:latest"])
 
-    log.info("Tagging and pushing to ECR...")
-    _run_subprocess(["docker", "tag", docker_image, f"{ecr_repo}:latest"])
+    log.info("Pushing to ECR...")
     _run_subprocess(["docker", "push", f"{ecr_repo}:latest"])
     console.print("[green]✓ Image pushed to ECR[/green]")
 
@@ -955,6 +972,13 @@ def build_parser() -> argparse.ArgumentParser:
     # deploy
     p_deploy = sub.add_parser("deploy", help="Deploy OpenClaw infrastructure")
     p_deploy.add_argument("--phase", choices=["1", "2", "3"], help="Deploy a specific phase only")
+    p_deploy.add_argument("--local", action="store_true",
+                          help="Phase 2: build image from local openclaw/ directory instead of pulling from Docker Hub")
+
+    # build-image — build and push the openclaw image without full Phase 2 deploy
+    p_build = sub.add_parser("build-image", help="Build openclaw image from local source and push to ECR")
+    p_build.add_argument("--source", choices=["local", "dockerhub"], default="local",
+                         help="Image source: local=build from openclaw/ dir, dockerhub=pull ffactory/openclaw:latest")
 
     # teardown
     p_tear = sub.add_parser("teardown", help="Remove all OpenClaw AWS resources")
@@ -989,18 +1013,80 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def cmd_build_image(args: argparse.Namespace) -> None:
+    """Build the openclaw image and push to ECR without running a full Phase 2 deploy."""
+    config = load_config()
+    session = get_boto_session(config)
+    account = verify_credentials(session)
+    region = config["region"]
+    use_local = args.source == "local"
+
+    ecr_repo = f"{account}.dkr.ecr.{region}.amazonaws.com/openclaw-runtime"
+
+    console.print(Panel(
+        f"[bold]OpenClaw Image Build[/bold]\n"
+        f"Source:  {'local openclaw/ directory' if use_local else config['docker_image']}\n"
+        f"Target:  {ecr_repo}:latest",
+        border_style="blue",
+    ))
+
+    # Ensure ECR repo exists
+    ecr = session.client("ecr")
+    try:
+        ecr.describe_repositories(repositoryNames=["openclaw-runtime"])
+    except ecr.exceptions.RepositoryNotFoundException:
+        log.info("Creating ECR repository: openclaw-runtime")
+        ecr.create_repository(
+            repositoryName="openclaw-runtime",
+            imageScanningConfiguration={"scanOnPush": True},
+        )
+
+    # Docker login
+    token = ecr.get_authorization_token()["authorizationData"][0]["authorizationToken"]
+    import base64
+    username, password = base64.b64decode(token).decode().split(":", 1)
+    _run_subprocess(["docker", "login", "--username", username, "--password-stdin",
+                     ecr_repo], input_text=password)
+
+    if use_local:
+        openclaw_dir = PROJECT_ROOT.parent / "openclaw"
+        if not openclaw_dir.exists():
+            console.print(f"[red]✗ openclaw/ directory not found at {openclaw_dir}[/red]")
+            sys.exit(1)
+        log.info("Building from %s (linux/arm64)...", openclaw_dir)
+        _run_subprocess([
+            "docker", "build",
+            "--platform", "linux/arm64",
+            "-t", f"{ecr_repo}:latest",
+            str(openclaw_dir),
+        ])
+        console.print("[green]✓ Image built from local source[/green]")
+    else:
+        docker_image = config["docker_image"]
+        log.info("Pulling %s (linux/arm64)...", docker_image)
+        _run_subprocess(["docker", "pull", "--platform", "linux/arm64", docker_image])
+        _run_subprocess(["docker", "tag", docker_image, f"{ecr_repo}:latest"])
+
+    log.info("Pushing to ECR...")
+    _run_subprocess(["docker", "push", f"{ecr_repo}:latest"])
+    console.print("[green]✓ Image pushed to ECR[/green]")
+    console.print("\nNew sessions will use the updated image automatically.")
+    console.print("Existing sessions continue until they idle-terminate (30 min).")
+
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
 
     dispatch = {
-        "deploy":   cmd_deploy,
-        "teardown": cmd_teardown,
-        "setup":    cmd_setup,
-        "users":    cmd_users,
-        "outputs":  cmd_outputs,
-        "status":   cmd_status,
-        "logs":     cmd_logs,
+        "deploy":       cmd_deploy,
+        "build-image":  cmd_build_image,
+        "teardown":     cmd_teardown,
+        "setup":        cmd_setup,
+        "users":        cmd_users,
+        "outputs":      cmd_outputs,
+        "status":       cmd_status,
+        "logs":         cmd_logs,
     }
     dispatch[args.command](args)
 
