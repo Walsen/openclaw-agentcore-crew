@@ -216,8 +216,19 @@ aws sso login --profile walsen
 
 **Redeploy after image update:**
 ```bash
-just deploy-phase2  # pulls new image, updates runtime
+just deploy-phase2  # pulls new image, builds wrapper, updates runtime
 ```
+
+## How the Wrapper Works
+
+The deployment builds a thin wrapper on top of `ffactory/openclaw:latest` that:
+
+1. Replaces the entrypoint with `agentcore_start.py` — a clean Python startup script
+2. Pre-injects AWS credentials at container startup (before any request arrives)
+3. Writes `openclaw.json` with the correct region and model ID
+4. Starts `server.py` directly, bypassing the complex `entrypoint.sh`
+
+This is necessary because the Node.js openclaw CLI needs explicit `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` env vars — it doesn't always pick up container credentials from the IAM role automatically.
 
 ## Cost Estimate (10 users, moderate usage)
 
