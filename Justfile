@@ -1,5 +1,5 @@
-# OpenClaw AgentCore — Justfile
-# Run `just` to see available commands
+## OpenClaw AgentCore — Justfile
+## Run `just` to see available commands
 
 _cli := ".venv/bin/python scripts/cli.py"
 
