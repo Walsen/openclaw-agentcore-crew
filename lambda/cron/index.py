@@ -44,9 +44,7 @@ def handler(event, context):
             return {"statusCode": 400, "error": "Missing required fields"}
 
         # Verify user still exists and is active
-        resp = identity_table.get_item(
-            Key={"pk": f"USER#{tenant_id}", "sk": "PROFILE"}
-        )
+        resp = identity_table.get_item(Key={"pk": f"USER#{tenant_id}", "sk": "PROFILE"})
         user = resp.get("Item")
         if not user or user.get("status") != "active":
             logger.warning("Cron task %s: user %s not found or inactive", task_id, tenant_id)
@@ -63,11 +61,13 @@ def handler(event, context):
             agentRuntimeId=RUNTIME_ID,
             qualifier="DEFAULT",
             runtimeSessionId=tenant_id,
-            payload=json.dumps({
-                "action": "cron",
-                "prompt": task_message,
-                "task_id": task_id,
-            }).encode(),
+            payload=json.dumps(
+                {
+                    "action": "cron",
+                    "prompt": task_message,
+                    "task_id": task_id,
+                }
+            ).encode(),
         )
         body_bytes = resp["response"].read()
         data = json.loads(body_bytes)

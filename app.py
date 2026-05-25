@@ -12,14 +12,14 @@ Deployment phases:
 
 import aws_cdk as cdk
 
-from stacks.vpc_stack import VpcStack
-from stacks.security_stack import SecurityStack
+from stacks.agentcore_stack import AgentCoreStack
+from stacks.cron_stack import CronStack
 from stacks.guardrails_stack import GuardrailsStack
 from stacks.observability_stack import ObservabilityStack
-from stacks.agentcore_stack import AgentCoreStack
 from stacks.router_stack import RouterStack
-from stacks.cron_stack import CronStack
+from stacks.security_stack import SecurityStack
 from stacks.token_monitoring_stack import TokenMonitoringStack
+from stacks.vpc_stack import VpcStack
 
 app = cdk.App()
 

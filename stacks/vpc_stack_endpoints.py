@@ -12,9 +12,7 @@ def add_vpc_endpoints(vpc: ec2.Vpc) -> None:
 
     # Gateway endpoints (free)
     vpc.add_gateway_endpoint("S3Endpoint", service=ec2.GatewayVpcEndpointAwsService.S3)
-    vpc.add_gateway_endpoint(
-        "DynamoEndpoint", service=ec2.GatewayVpcEndpointAwsService.DYNAMODB
-    )
+    vpc.add_gateway_endpoint("DynamoEndpoint", service=ec2.GatewayVpcEndpointAwsService.DYNAMODB)
 
     # Interface endpoints (billed per AZ-hour)
     interface_services = [

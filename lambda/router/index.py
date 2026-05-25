@@ -34,8 +34,8 @@ secrets_client = boto3.client("secretsmanager")
 dynamodb = boto3.resource("dynamodb")
 
 IDENTITY_TABLE = os.environ["IDENTITY_TABLE"]
-RUNTIME_ID = os.environ.get("RUNTIME_ID", "")          # set after Phase 2
-RUNTIME_ARN = os.environ.get("RUNTIME_ARN", "")        # full ARN for invoke_agent_runtime
+RUNTIME_ID = os.environ.get("RUNTIME_ID", "")  # set after Phase 2
+RUNTIME_ARN = os.environ.get("RUNTIME_ARN", "")  # full ARN for invoke_agent_runtime
 STACK_NAME = os.environ.get("STACK_NAME", "OpenClaw")
 CHANNELS = os.environ.get("CHANNELS", "telegram").split(",")
 MAX_USERS = int(os.environ.get("MAX_USERS", "10"))
@@ -49,10 +49,10 @@ agentcore_client = boto3.client("bedrock-agentcore", region_name=AWS_REGION)
 
 # Channel prefix map (must match server.py ch_map)
 CHANNEL_PREFIX = {
-    "telegram":  "tg",
-    "slack":     "sl",
-    "whatsapp":  "wa",
-    "discord":   "dc",
+    "telegram": "tg",
+    "slack": "sl",
+    "whatsapp": "wa",
+    "discord": "dc",
 }
 
 # ── Secret cache ─────────────────────────────────────────────────────────
@@ -74,6 +74,7 @@ def _get_secret(arn: str) -> str:
 
 # ── Signature verification ────────────────────────────────────────────────
 
+
 def _verify_slack_signature(body: str, headers: dict) -> bool:
     """Verify Slack request using signing secret (HMAC-SHA256)."""
     secret_arn = os.environ.get("SLACK_SECRET_ARN", "")
@@ -88,9 +89,7 @@ def _verify_slack_signature(body: str, headers: dict) -> bool:
         if abs(time.time() - int(timestamp)) > 300:
             return False
         base = f"v0:{timestamp}:{body}"
-        expected = "v0=" + hmac.new(
-            signing_secret.encode(), base.encode(), hashlib.sha256
-        ).hexdigest()
+        expected = "v0=" + hmac.new(signing_secret.encode(), base.encode(), hashlib.sha256).hexdigest()
         return hmac.compare_digest(expected, signature)
     except Exception as e:
         logger.warning("Slack signature verification failed: %s", e)
@@ -106,9 +105,7 @@ def _verify_whatsapp_signature(body: str, headers: dict) -> bool:
         creds = json.loads(_get_secret(secret_arn))
         app_secret = creds.get("appSecret", creds.get("token", ""))
         signature = headers.get("x-hub-signature-256", "").removeprefix("sha256=")
-        expected = hmac.new(
-            app_secret.encode(), body.encode(), hashlib.sha256
-        ).hexdigest()
+        expected = hmac.new(app_secret.encode(), body.encode(), hashlib.sha256).hexdigest()
         return hmac.compare_digest(expected, signature)
     except Exception as e:
         logger.warning("WhatsApp signature verification failed: %s", e)
@@ -121,8 +118,9 @@ def _verify_discord_signature(body: str, headers: dict) -> bool:
     if not secret_arn:
         return False
     try:
-        from nacl.signing import VerifyKey  # type: ignore
         from nacl.exceptions import BadSignatureError  # type: ignore
+        from nacl.signing import VerifyKey  # type: ignore
+
         creds = json.loads(_get_secret(secret_arn))
         public_key = creds.get("publicKey", "")
         signature = headers.get("x-signature-ed25519", "")
@@ -136,6 +134,7 @@ def _verify_discord_signature(body: str, headers: dict) -> bool:
 
 
 # ── Message extraction ────────────────────────────────────────────────────
+
 
 def _extract_message(channel: str, body: dict) -> tuple[str, str, str] | None:
     """Return (channel_user_id, display_name, message_text) or None to skip."""
@@ -197,6 +196,7 @@ def _extract_message(channel: str, body: dict) -> tuple[str, str, str] | None:
 
 # ── User identity ─────────────────────────────────────────────────────────
 
+
 def _resolve_user(channel: str, channel_user_id: str) -> dict | None:
     """Look up user in identity table by channel_id GSI."""
     try:
@@ -241,8 +241,8 @@ def _register_user(channel: str, channel_user_id: str, display_name: str) -> dic
 
 # ── AgentCore invocation ──────────────────────────────────────────────────
 
-def _invoke_and_reply(tenant_id: str, message: str, channel: str,
-                      channel_user_id: str, body: dict) -> None:
+
+def _invoke_and_reply(tenant_id: str, message: str, channel: str, channel_user_id: str, body: dict) -> None:
     """Run in a background thread — invoke AgentCore then send reply.
 
     The Lambda returns 200 to the webhook platform immediately (within ~100ms).
@@ -321,19 +321,23 @@ def _invoke_agentcore(tenant_id: str, message: str) -> str:
 
 # ── Channel reply senders ─────────────────────────────────────────────────
 
+
 def _reply_telegram(channel_user_id: str, text: str) -> None:
     """Send reply via Telegram Bot API."""
     import urllib.request
+
     secret_arn = os.environ.get("TELEGRAM_SECRET_ARN", "")
     if not secret_arn:
         return
     token = _get_secret(secret_arn)
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = json.dumps({
-        "chat_id": channel_user_id,
-        "text": text,
-        "parse_mode": "Markdown",
-    }).encode()
+    payload = json.dumps(
+        {
+            "chat_id": channel_user_id,
+            "text": text,
+            "parse_mode": "Markdown",
+        }
+    ).encode()
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
     try:
         urllib.request.urlopen(req, timeout=10)
@@ -344,6 +348,7 @@ def _reply_telegram(channel_user_id: str, text: str) -> None:
 def _reply_slack(channel_user_id: str, text: str) -> None:
     """Send reply via Slack Web API (DM to user)."""
     import urllib.request
+
     secret_arn = os.environ.get("SLACK_SECRET_ARN", "")
     if not secret_arn:
         return
@@ -353,8 +358,9 @@ def _reply_slack(channel_user_id: str, text: str) -> None:
     url_open = "https://slack.com/api/conversations.open"
     payload_open = json.dumps({"users": channel_user_id}).encode()
     req = urllib.request.Request(
-        url_open, data=payload_open,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {bot_token}"}
+        url_open,
+        data=payload_open,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {bot_token}"},
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -367,8 +373,7 @@ def _reply_slack(channel_user_id: str, text: str) -> None:
     url_msg = "https://slack.com/api/chat.postMessage"
     payload_msg = json.dumps({"channel": dm_channel, "text": text}).encode()
     req2 = urllib.request.Request(
-        url_msg, data=payload_msg,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {bot_token}"}
+        url_msg, data=payload_msg, headers={"Content-Type": "application/json", "Authorization": f"Bearer {bot_token}"}
     )
     try:
         urllib.request.urlopen(req2, timeout=10)
@@ -379,6 +384,7 @@ def _reply_slack(channel_user_id: str, text: str) -> None:
 def _reply_whatsapp(channel_user_id: str, text: str) -> None:
     """Send reply via WhatsApp Cloud API."""
     import urllib.request
+
     secret_arn = os.environ.get("WHATSAPP_SECRET_ARN", "")
     if not secret_arn:
         return
@@ -386,15 +392,16 @@ def _reply_whatsapp(channel_user_id: str, text: str) -> None:
     token = creds.get("token", "")
     phone_number_id = creds.get("phoneNumberId", "")
     url = f"https://graph.facebook.com/v19.0/{phone_number_id}/messages"
-    payload = json.dumps({
-        "messaging_product": "whatsapp",
-        "to": channel_user_id,
-        "type": "text",
-        "text": {"body": text},
-    }).encode()
+    payload = json.dumps(
+        {
+            "messaging_product": "whatsapp",
+            "to": channel_user_id,
+            "type": "text",
+            "text": {"body": text},
+        }
+    ).encode()
     req = urllib.request.Request(
-        url, data=payload,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+        url, data=payload, headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
     )
     try:
         urllib.request.urlopen(req, timeout=10)
@@ -405,12 +412,10 @@ def _reply_whatsapp(channel_user_id: str, text: str) -> None:
 def _reply_discord(interaction_token: str, application_id: str, text: str) -> None:
     """Send reply via Discord interaction followup (deferred response)."""
     import urllib.request
+
     url = f"https://discord.com/api/v10/webhooks/{application_id}/{interaction_token}"
     payload = json.dumps({"content": text}).encode()
-    req = urllib.request.Request(
-        url, data=payload,
-        headers={"Content-Type": "application/json"}
-    )
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
     try:
         urllib.request.urlopen(req, timeout=10)
     except Exception as e:
@@ -418,6 +423,7 @@ def _reply_discord(interaction_token: str, application_id: str, text: str) -> No
 
 
 # ── Lambda handler ────────────────────────────────────────────────────────
+
 
 def handler(event, context):
     """API Gateway HTTP API v2 payload format."""
@@ -428,6 +434,7 @@ def handler(event, context):
         is_base64 = event.get("isBase64Encoded", False)
         if is_base64:
             import base64
+
             body_str = base64.b64decode(body_str).decode()
 
         # ── WhatsApp webhook verification (GET with hub.challenge) ────────
@@ -518,6 +525,7 @@ def handler(event, context):
         if channel == "discord":
             # Discord: return ACK immediately, reply via followup webhook
             import threading
+
             t = threading.Thread(
                 target=_invoke_and_reply,
                 args=(tenant_id, message_text, channel, channel_user_id, body),

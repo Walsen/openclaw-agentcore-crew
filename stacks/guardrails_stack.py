@@ -26,12 +26,8 @@ class GuardrailsStack(cdk.Stack):
             self.guardrail_version = ""
             return
 
-        filter_level = (
-            self.node.try_get_context("guardrails_content_filter_level") or "HIGH"
-        )
-        pii_action = (
-            self.node.try_get_context("guardrails_pii_action") or "ANONYMIZE"
-        )
+        filter_level = self.node.try_get_context("guardrails_content_filter_level") or "HIGH"
+        pii_action = self.node.try_get_context("guardrails_pii_action") or "ANONYMIZE"
 
         content_filters = [
             {"type": t, "inputStrength": filter_level, "outputStrength": filter_level}

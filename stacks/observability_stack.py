@@ -9,6 +9,8 @@ Provides operational visibility into the OpenClaw deployment:
 import aws_cdk as cdk
 from aws_cdk import (
     aws_cloudwatch as cloudwatch,
+)
+from aws_cdk import (
     aws_sns as sns,
 )
 from constructs import Construct

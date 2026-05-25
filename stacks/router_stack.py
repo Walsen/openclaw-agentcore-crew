@@ -13,9 +13,17 @@ DynamoDB stores the user identity/allowlist table.
 import aws_cdk as cdk
 from aws_cdk import (
     aws_apigatewayv2 as apigwv2,
+)
+from aws_cdk import (
     aws_dynamodb as dynamodb,
+)
+from aws_cdk import (
     aws_iam as iam,
+)
+from aws_cdk import (
     aws_lambda as lambda_,
+)
+from aws_cdk import (
     aws_logs as logs,
 )
 from constructs import Construct
@@ -46,12 +54,8 @@ class RouterStack(cdk.Stack):
             self,
             "IdentityTable",
             table_name=f"{prefix.lower()}-identity",
-            partition_key=dynamodb.Attribute(
-                name="pk", type=dynamodb.AttributeType.STRING
-            ),
-            sort_key=dynamodb.Attribute(
-                name="sk", type=dynamodb.AttributeType.STRING
-            ),
+            partition_key=dynamodb.Attribute(name="pk", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="sk", type=dynamodb.AttributeType.STRING),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             encryption=dynamodb.TableEncryption.AWS_MANAGED,
             removal_policy=cdk.RemovalPolicy.RETAIN,
@@ -63,17 +67,14 @@ class RouterStack(cdk.Stack):
         # GSI for looking up users by channel ID
         self.identity_table.add_global_secondary_index(
             index_name="channel-lookup",
-            partition_key=dynamodb.Attribute(
-                name="channel_id", type=dynamodb.AttributeType.STRING
-            ),
+            partition_key=dynamodb.Attribute(name="channel_id", type=dynamodb.AttributeType.STRING),
             projection_type=dynamodb.ProjectionType.ALL,
         )
 
         # runtime_id is populated in cdk.json after Phase 2 completes
         runtime_id = self.node.try_get_context("runtime_id") or ""
         runtime_arn = (
-            f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:runtime/{runtime_id}"
-            if runtime_id else ""
+            f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:runtime/{runtime_id}" if runtime_id else ""
         )
 
         # --- Router Lambda log group --------------------------------------
@@ -106,10 +107,7 @@ class RouterStack(cdk.Stack):
                 "RUNTIME_ID": runtime_id,
                 "RUNTIME_ARN": runtime_arn,
                 # Secret names — use the name directly, not a wildcard ARN
-                **{
-                    f"{ch.upper()}_SECRET_ARN": f"openclaw/channels/{ch}"
-                    for ch in channels
-                },
+                **{f"{ch.upper()}_SECRET_ARN": f"openclaw/channels/{ch}" for ch in channels},
                 "WEBHOOK_SECRET_ARN": "openclaw/webhook-secret",
             },
             log_group=router_log_group,
@@ -125,11 +123,7 @@ class RouterStack(cdk.Stack):
                 sid="KmsDecrypt",
                 actions=["kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey"],
                 resources=["*"],
-                conditions={
-                    "StringLike": {
-                        "kms:ViaService": f"secretsmanager.{self.region}.amazonaws.com"
-                    }
-                },
+                conditions={"StringLike": {"kms:ViaService": f"secretsmanager.{self.region}.amazonaws.com"}},
             )
         )
 
@@ -138,9 +132,7 @@ class RouterStack(cdk.Stack):
             iam.PolicyStatement(
                 sid="SecretsRead",
                 actions=["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
-                resources=[
-                    f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:openclaw/*"
-                ],
+                resources=[f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:openclaw/*"],
             )
         )
 
@@ -189,7 +181,7 @@ class RouterStack(cdk.Stack):
         )
 
         # Auto-deploy stage
-        stage = apigwv2.CfnStage(
+        apigwv2.CfnStage(
             self,
             "DefaultStage",
             api_id=self.http_api.ref,
@@ -209,6 +201,4 @@ class RouterStack(cdk.Stack):
 
         cdk.CfnOutput(self, "ApiUrl", value=self.api_url)
         cdk.CfnOutput(self, "IdentityTableName", value=self.identity_table.table_name)
-        cdk.CfnOutput(
-            self, "RouterFunctionArn", value=self.router_function.function_arn
-        )
+        cdk.CfnOutput(self, "RouterFunctionArn", value=self.router_function.function_arn)

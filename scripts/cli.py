@@ -128,6 +128,7 @@ def stack_exists(cfn: boto3.client, stack_name: str) -> bool:
 
 # ── CDK helpers ───────────────────────────────────────────────────────────
 
+
 def run_cdk(args: list[str], config: dict, dry_run: bool = False) -> None:
     """Run a CDK command with the correct profile and region."""
     profile = config.get("aws_profile", "")
@@ -154,6 +155,7 @@ def run_cdk(args: list[str], config: dict, dry_run: bool = False) -> None:
 
 # ── Deploy ────────────────────────────────────────────────────────────────
 
+
 def cmd_deploy(args: argparse.Namespace) -> None:
     config = load_config()
     session = get_boto_session(config)
@@ -163,14 +165,16 @@ def cmd_deploy(args: argparse.Namespace) -> None:
     phase = args.phase  # None = all
     use_local = getattr(args, "local", False)
 
-    console.print(Panel(
-        f"[bold]OpenClaw AgentCore Deployment[/bold]\n"
-        f"Account: {account}\n"
-        f"Region:  {region}\n"
-        f"Image:   {'local build (openclaw/)' if use_local else config['docker_image']}\n"
-        f"Profile: {config.get('aws_profile', '(default)')}",
-        border_style="blue",
-    ))
+    console.print(
+        Panel(
+            f"[bold]OpenClaw AgentCore Deployment[/bold]\n"
+            f"Account: {account}\n"
+            f"Region:  {region}\n"
+            f"Image:   {'local build (openclaw/)' if use_local else config['docker_image']}\n"
+            f"Profile: {config.get('aws_profile', '(default)')}",
+            border_style="blue",
+        )
+    )
 
     if phase in (None, "1"):
         _deploy_phase1(config, prefix)
@@ -187,7 +191,9 @@ def _deploy_phase1(config: dict, prefix: str) -> None:
     console.print("[green]✓ Phase 1 complete[/green]")
 
 
-def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: str, prefix: str, use_local: bool = False) -> None:
+def _deploy_phase2(
+    config: dict, session: boto3.Session, account: str, region: str, prefix: str, use_local: bool = False
+) -> None:
     console.print("\n[bold cyan]━━━ Phase 2: AgentCore Runtime ━━━[/bold cyan]")
     cfn = session.client("cloudformation")
 
@@ -222,9 +228,9 @@ def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: s
     log.info("Authenticating Docker with ECR...")
     token = ecr.get_authorization_token()["authorizationData"][0]["authorizationToken"]
     import base64
+
     username, password = base64.b64decode(token).decode().split(":", 1)
-    _run_subprocess(["docker", "login", "--username", username, "--password-stdin",
-                     ecr_repo], input_text=password)
+    _run_subprocess(["docker", "login", "--username", username, "--password-stdin", ecr_repo], input_text=password)
 
     if use_local:
         # Build from local openclaw/ directory
@@ -233,13 +239,19 @@ def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: s
             console.print(f"[red]✗ openclaw/ directory not found at {openclaw_dir}[/red]")
             sys.exit(1)
         log.info("Building image from %s (linux/arm64)...", openclaw_dir)
-        _run_subprocess([
-            "docker", "buildx", "build",
-            "--platform", "linux/arm64",
-            "--load",
-            "-t", f"{ecr_repo}:latest",
-            str(openclaw_dir),
-        ])
+        _run_subprocess(
+            [
+                "docker",
+                "buildx",
+                "build",
+                "--platform",
+                "linux/arm64",
+                "--load",
+                "-t",
+                f"{ecr_repo}:latest",
+                str(openclaw_dir),
+            ]
+        )
         console.print("[green]✓ Image built from local source[/green]")
     else:
         # Pull from Docker Hub directly — credential pre-injection is now in entrypoint.sh
@@ -288,9 +300,7 @@ def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: s
     # where SAFE_EMAIL is the address with @ and . replaced by _ (uppercased).
     # GOG_ACCOUNTS lists all configured addresses (comma-separated).
     # GOG_DEFAULT_ACCOUNT is the one used when no account is specified.
-    google_secret_arn = (
-        f"arn:aws:secretsmanager:{region}:{account}:secret:openclaw/google-oauth"
-    )
+    google_secret_arn = f"arn:aws:secretsmanager:{region}:{account}:secret:openclaw/google-oauth"
     sm = session.client("secretsmanager")
     try:
         google_secret_raw = sm.get_secret_value(SecretId="openclaw/google-oauth")["SecretString"]
@@ -306,19 +316,18 @@ def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: s
         if accounts:
             agentcore_env["GOG_CREDENTIALS_SECRET_ARN"] = google_secret_arn
             agentcore_env["GOG_ACCOUNTS"] = ",".join(accounts.keys())
-            agentcore_env["GOG_DEFAULT_ACCOUNT"] = google_store.get(
-                "default_account", next(iter(accounts))
-            )
+            agentcore_env["GOG_DEFAULT_ACCOUNT"] = google_store.get("default_account", next(iter(accounts)))
             for email, creds in accounts.items():
                 safe = email.upper().replace("@", "_AT_").replace(".", "_")
-                agentcore_env[f"GOG_ACCOUNT_{safe}_CLIENT_ID"]     = creds.get("client_id", "")
+                agentcore_env[f"GOG_ACCOUNT_{safe}_CLIENT_ID"] = creds.get("client_id", "")
                 agentcore_env[f"GOG_ACCOUNT_{safe}_CLIENT_SECRET"] = creds.get("client_secret", "")
                 agentcore_env[f"GOG_ACCOUNT_{safe}_REFRESH_TOKEN"] = creds.get("refresh_token", "")
-                agentcore_env[f"GOG_ACCOUNT_{safe}_SCOPES"]        = ",".join(creds.get("scopes", []))
-                agentcore_env[f"GOG_ACCOUNT_{safe}_LABEL"]         = creds.get("label", email)
+                agentcore_env[f"GOG_ACCOUNT_{safe}_SCOPES"] = ",".join(creds.get("scopes", []))
+                agentcore_env[f"GOG_ACCOUNT_{safe}_LABEL"] = creds.get("label", email)
             log.info(
                 "Google OAuth: injecting %d account(s): %s",
-                len(accounts), ", ".join(accounts.keys()),
+                len(accounts),
+                ", ".join(accounts.keys()),
             )
         else:
             log.info("Google OAuth secret has no accounts — run `just setup-google`")
@@ -337,9 +346,7 @@ def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: s
         log.info("Updating existing runtime: %s", existing_runtime_id)
         agentcore_control.update_agent_runtime(
             agentRuntimeId=existing_runtime_id,
-            agentRuntimeArtifact={
-                "containerConfiguration": {"containerUri": f"{ecr_repo}:latest"}
-            },
+            agentRuntimeArtifact={"containerConfiguration": {"containerUri": f"{ecr_repo}:latest"}},
             roleArn=role_arn,
             networkConfiguration={"networkMode": "PUBLIC"},
             lifecycleConfiguration={
@@ -348,20 +355,20 @@ def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: s
             },
             environmentVariables=agentcore_env,
         )
-        console.print(Panel(
-            f"[bold green]✓ Phase 2 complete![/bold green]\n\n"
-            f"Runtime updated: [bold]{existing_runtime_id}[/bold]\n"
-            "New sessions will use the updated image automatically.\n\n"
-            "Run [bold]just deploy-phase3[/bold] to continue.",
-            border_style="green",
-        ))
+        console.print(
+            Panel(
+                f"[bold green]✓ Phase 2 complete![/bold green]\n\n"
+                f"Runtime updated: [bold]{existing_runtime_id}[/bold]\n"
+                "New sessions will use the updated image automatically.\n\n"
+                "Run [bold]just deploy-phase3[/bold] to continue.",
+                border_style="green",
+            )
+        )
     else:
         # Create new runtime
         resp = agentcore_control.create_agent_runtime(
             agentRuntimeName="openclaw_agent",
-            agentRuntimeArtifact={
-                "containerConfiguration": {"containerUri": f"{ecr_repo}:latest"}
-            },
+            agentRuntimeArtifact={"containerConfiguration": {"containerUri": f"{ecr_repo}:latest"}},
             roleArn=role_arn,
             networkConfiguration={"networkMode": "PUBLIC"},
             lifecycleConfiguration={
@@ -375,8 +382,9 @@ def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: s
 
         # Poll until READY (up to 5 minutes)
         log.info("Waiting for runtime to become READY...")
-        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
-                      transient=True) as progress:
+        with Progress(
+            SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True
+        ) as progress:
             task = progress.add_task("Waiting for runtime...", total=None)
             for _ in range(60):
                 time.sleep(5)
@@ -392,13 +400,15 @@ def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: s
 
         # Automatically save runtime_id to cdk.json — no manual step needed
         save_config_value("runtime_id", new_runtime_id)
-        console.print(Panel(
-            f"[bold green]✓ Phase 2 complete![/bold green]\n\n"
-            f"Runtime ID: [bold]{new_runtime_id}[/bold]\n"
-            "Saved to cdk.json automatically.\n\n"
-            "Run [bold]just deploy-phase3[/bold] to continue.",
-            border_style="green",
-        ))
+        console.print(
+            Panel(
+                f"[bold green]✓ Phase 2 complete![/bold green]\n\n"
+                f"Runtime ID: [bold]{new_runtime_id}[/bold]\n"
+                "Saved to cdk.json automatically.\n\n"
+                "Run [bold]just deploy-phase3[/bold] to continue.",
+                border_style="green",
+            )
+        )
 
 
 def _deploy_phase3(config: dict, prefix: str) -> None:
@@ -424,17 +434,20 @@ def _deploy_phase3(config: dict, prefix: str) -> None:
     cfn = session.client("cloudformation")
     api_url = get_stack_output(cfn, f"{prefix}Router", "ApiUrl")
     if api_url:
-        console.print(Panel(
-            f"[bold green]Deployment Complete![/bold green]\n\n"
-            f"API URL: [bold]{api_url}[/bold]\n\n"
-            "Next steps:\n"
-            "  1. Run: [bold]just setup-telegram[/bold] (and other channels)\n"
-            "  2. Run: [bold]just add-user telegram:YOUR_ID 'Your Name'[/bold]",
-            border_style="green",
-        ))
+        console.print(
+            Panel(
+                f"[bold green]Deployment Complete![/bold green]\n\n"
+                f"API URL: [bold]{api_url}[/bold]\n\n"
+                "Next steps:\n"
+                "  1. Run: [bold]just setup-telegram[/bold] (and other channels)\n"
+                "  2. Run: [bold]just add-user telegram:YOUR_ID 'Your Name'[/bold]",
+                border_style="green",
+            )
+        )
 
 
 # ── Teardown ──────────────────────────────────────────────────────────────
+
 
 def cmd_teardown(args: argparse.Namespace) -> None:
     config = load_config()
@@ -445,13 +458,15 @@ def cmd_teardown(args: argparse.Namespace) -> None:
     force = args.force
     dry_run = args.dry_run
 
-    console.print(Panel(
-        f"[bold red]OpenClaw — Full Teardown[/bold red]\n"
-        + ("[bold yellow]MODE: DRY RUN — nothing will be deleted[/bold yellow]\n" if dry_run else "")
-        + f"Region:  {region}\n"
-        f"Account: {account}",
-        border_style="red",
-    ))
+    console.print(
+        Panel(
+            "[bold red]OpenClaw — Full Teardown[/bold red]\n"
+            + ("[bold yellow]MODE: DRY RUN — nothing will be deleted[/bold yellow]\n" if dry_run else "")
+            + f"Region:  {region}\n"
+            f"Account: {account}",
+            border_style="red",
+        )
+    )
 
     if not force and not dry_run:
         console.print("[red]This will permanently delete all OpenClaw AWS resources.[/red]")
@@ -489,15 +504,17 @@ def cmd_teardown(args: argparse.Namespace) -> None:
     # Step 8: Telegram webhook
     _teardown_telegram_webhook(session, region, dry_run, force)
 
-    console.print(Panel(
-        "[bold]Teardown Complete[/bold]\n\n"
-        "[yellow]Resources NOT deleted (manual cleanup needed):[/yellow]\n"
-        "• Secrets Manager secrets (contain bot tokens)\n"
-        f"  aws secretsmanager list-secrets --region {region}\n"
-        "• DynamoDB identity table: openclaw-identity\n"
-        "• CDK bootstrap stack: CDKToolkit",
-        border_style="yellow",
-    ))
+    console.print(
+        Panel(
+            "[bold]Teardown Complete[/bold]\n\n"
+            "[yellow]Resources NOT deleted (manual cleanup needed):[/yellow]\n"
+            "• Secrets Manager secrets (contain bot tokens)\n"
+            f"  aws secretsmanager list-secrets --region {region}\n"
+            "• DynamoDB identity table: openclaw-identity\n"
+            "• CDK bootstrap stack: CDKToolkit",
+            border_style="yellow",
+        )
+    )
 
 
 def _teardown_agentcore_runtime(config, session, region, dry_run, force):
@@ -517,9 +534,7 @@ def _teardown_agentcore_runtime(config, session, region, dry_run, force):
             ep_id = ep["agentRuntimeEndpointId"]
             log.info("Deleting endpoint: %s", ep_id)
             if not dry_run:
-                client.delete_agent_runtime_endpoint(
-                    agentRuntimeId=runtime_id, endpointId=ep_id
-                )
+                client.delete_agent_runtime_endpoint(agentRuntimeId=runtime_id, endpointId=ep_id)
                 _wait_with_spinner(f"Waiting for endpoint {ep_id} deletion", 15)
     except Exception as e:
         log.warning("Could not list/delete endpoints (non-fatal): %s", e)
@@ -620,9 +635,7 @@ def _teardown_kms(session, region, dry_run, force):
         log.info("KMS key already scheduled for deletion")
         return
 
-    if not force and not Confirm.ask(
-        f"Schedule KMS key for deletion (7-day waiting period): {key_id}?"
-    ):
+    if not force and not Confirm.ask(f"Schedule KMS key for deletion (7-day waiting period): {key_id}?"):
         return
 
     if dry_run:
@@ -690,6 +703,7 @@ def _teardown_telegram_webhook(session, region, dry_run, force):
 
 # ── Channel Setup ─────────────────────────────────────────────────────────
 
+
 def cmd_setup(args: argparse.Namespace) -> None:
     config = load_config()
     session = get_boto_session(config)
@@ -729,10 +743,11 @@ def _setup_telegram(session, sm, cfn, api_url, region, prefix):
         pass
 
     import re
+
     _tg_token_re = re.compile(r"^\d+:[\w-]{35,}$")
     if not token or token == "null" or not _tg_token_re.match(token):
         if token and token not in ("null", ""):
-            console.print(f"\n[yellow]Existing secret doesn't look like a valid Telegram token.[/yellow]")
+            console.print("\n[yellow]Existing secret doesn't look like a valid Telegram token.[/yellow]")
         else:
             console.print("\n[yellow]No Telegram bot token found in Secrets Manager.[/yellow]")
         console.print("  1. Talk to [bold]@BotFather[/bold] on Telegram to create a bot")
@@ -796,17 +811,19 @@ def _setup_whatsapp(sm, api_url, region):
     app_secret = Prompt.ask("App Secret (for webhook signature verification)")
     verify_token = Prompt.ask("Webhook Verify Token (choose any string)")
 
-    secret_json = json.dumps({
-        "token": wa_token,
-        "phoneNumberId": phone_id,
-        "appSecret": app_secret,
-        "verifyToken": verify_token,
-    })
+    secret_json = json.dumps(
+        {
+            "token": wa_token,
+            "phoneNumberId": phone_id,
+            "appSecret": app_secret,
+            "verifyToken": verify_token,
+        }
+    )
     sm.update_secret(SecretId="openclaw/channels/whatsapp", SecretString=secret_json)
     console.print("[green]✓ WhatsApp credentials stored[/green]")
 
     webhook_url = f"{api_url}/webhook/whatsapp"
-    console.print(f"\n4. In Meta Developer Console → Webhooks → Configure:")
+    console.print("\n4. In Meta Developer Console → Webhooks → Configure:")
     console.print(f"   Callback URL: [bold]{webhook_url}[/bold]")
     console.print(f"   Verify Token: [bold]{verify_token}[/bold]")
     console.print("   Subscribe to: messages")
@@ -829,7 +846,7 @@ def _setup_discord(sm, api_url, region):
     console.print("[green]✓ Discord credentials stored[/green]")
 
     webhook_url = f"{api_url}/webhook/discord"
-    console.print(f"\n5. Under 'General Information', set Interactions Endpoint URL to:")
+    console.print("\n5. Under 'General Information', set Interactions Endpoint URL to:")
     console.print(f"   [bold]{webhook_url}[/bold]")
     console.print("\n6. Under 'OAuth2 → URL Generator':")
     console.print("   Scopes: bot, applications.commands")
@@ -838,6 +855,7 @@ def _setup_discord(sm, api_url, region):
 
 
 # ── Google OAuth Setup ────────────────────────────────────────────────────
+
 
 def _google_scope_options() -> dict:
     return {
@@ -867,8 +885,7 @@ def _google_scope_options() -> dict:
     }
 
 
-def _run_oauth_flow(client_id: str, client_secret: str, scopes: list[str],
-                    account_hint: str) -> str:
+def _run_oauth_flow(client_id: str, client_secret: str, scopes: list[str], account_hint: str) -> str:
     """Run the local OAuth browser flow and return the refresh token."""
     try:
         from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore
@@ -889,8 +906,7 @@ def _run_oauth_flow(client_id: str, client_secret: str, scopes: list[str],
         }
     }
     console.print(
-        f"\nA browser window will open. Sign in with [bold]{account_hint}[/bold] "
-        "and grant the requested permissions.\n"
+        f"\nA browser window will open. Sign in with [bold]{account_hint}[/bold] and grant the requested permissions.\n"
     )
     try:
         flow = InstalledAppFlow.from_client_config(client_config, scopes=scopes)
@@ -1018,18 +1034,17 @@ def cmd_setup_google(args: argparse.Namespace) -> None:
         return
 
     # ── Add / update an account ───────────────────────────────────────────
-    console.print(Panel(
-        "[bold]OpenClaw — Google Workspace Setup[/bold]\n\n"
-        "Connect a Google account so OpenClaw can access Gmail, Calendar,\n"
-        "Drive, Sheets, Docs, and Contacts.\n\n"
-        + (
-            f"[dim]Currently configured: {', '.join(accounts.keys())}[/dim]\n\n"
-            if accounts else ""
+    console.print(
+        Panel(
+            "[bold]OpenClaw — Google Workspace Setup[/bold]\n\n"
+            "Connect a Google account so OpenClaw can access Gmail, Calendar,\n"
+            "Drive, Sheets, Docs, and Contacts.\n\n"
+            + (f"[dim]Currently configured: {', '.join(accounts.keys())}[/dim]\n\n" if accounts else "")
+            + "[yellow]You will need a web browser on this machine to complete\n"
+            "the one-time OAuth authorization flow.[/yellow]",
+            border_style="blue",
         )
-        + "[yellow]You will need a web browser on this machine to complete\n"
-          "the one-time OAuth authorization flow.[/yellow]",
-        border_style="blue",
-    ))
+    )
 
     # ── Step 1: Google Cloud Console ──────────────────────────────────────
     console.print("\n[bold cyan]━━━ Step 1: Google Cloud Project ━━━[/bold cyan]")
@@ -1042,8 +1057,7 @@ def cmd_setup_google(args: argparse.Namespace) -> None:
         first = next(iter(accounts.values()))
         existing_client_id = first.get("client_id", "")
         console.print(
-            f"\nYou already have an OAuth client configured "
-            f"(client_id: [dim]{existing_client_id[:30]}...[/dim])."
+            f"\nYou already have an OAuth client configured (client_id: [dim]{existing_client_id[:30]}...[/dim])."
         )
         reuse = Prompt.ask(
             "Reuse the same OAuth client for this account?",
@@ -1075,9 +1089,7 @@ def cmd_setup_google(args: argparse.Namespace) -> None:
         )
         Prompt.ask("Press Enter when you have the Client ID and Client Secret ready")
 
-    client_id = existing_client_id if reuse_client else Prompt.ask(
-        "Client ID (ends with .apps.googleusercontent.com)"
-    )
+    client_id = existing_client_id if reuse_client else Prompt.ask("Client ID (ends with .apps.googleusercontent.com)")
     client_secret = existing_client_secret if reuse_client else Prompt.ask("Client Secret")
 
     google_account = Prompt.ask("Google account email to add")
@@ -1143,21 +1155,23 @@ def cmd_setup_google(args: argparse.Namespace) -> None:
 
     # ── Done ──────────────────────────────────────────────────────────────
     all_emails = list(accounts.keys())
-    console.print(Panel(
-        f"[bold green]✓ {google_account} connected![/bold green]\n\n"
-        f"Label:    {label}\n"
-        f"Access:   {scope_level}\n"
-        f"Default:  {store['default_account']}\n"
-        f"All accounts ({len(all_emails)}): {', '.join(all_emails)}\n\n"
-        "Next steps:\n"
-        "  1. Run [bold]just deploy-phase2[/bold] to inject credentials into the container\n"
-        "  2. Add more accounts with [bold]just setup-google[/bold]\n"
-        "  3. Then message OpenClaw:\n"
-        '     [italic]"Check my work email for unread messages"[/italic]\n'
-        '     [italic]"Find all invoices in my personal Gmail this month"[/italic]\n'
-        '     [italic]"What\'s on my work calendar this week?"[/italic]',
-        border_style="green",
-    ))
+    console.print(
+        Panel(
+            f"[bold green]✓ {google_account} connected![/bold green]\n\n"
+            f"Label:    {label}\n"
+            f"Access:   {scope_level}\n"
+            f"Default:  {store['default_account']}\n"
+            f"All accounts ({len(all_emails)}): {', '.join(all_emails)}\n\n"
+            "Next steps:\n"
+            "  1. Run [bold]just deploy-phase2[/bold] to inject credentials into the container\n"
+            "  2. Add more accounts with [bold]just setup-google[/bold]\n"
+            "  3. Then message OpenClaw:\n"
+            '     [italic]"Check my work email for unread messages"[/italic]\n'
+            '     [italic]"Find all invoices in my personal Gmail this month"[/italic]\n'
+            '     [italic]"What\'s on my work calendar this week?"[/italic]',
+            border_style="green",
+        )
+    )
 
 
 # ── User Management ───────────────────────────────────────────────────────
@@ -1175,15 +1189,17 @@ def _add_user_to_table(session, cfn, router_stack, region, channel, channel_user
     user_id = f"{prefix}__{channel_user_id}"
     ddb = session.resource("dynamodb")
     table = ddb.Table(table_name)
-    table.put_item(Item={
-        "pk": f"USER#{user_id}",
-        "sk": "PROFILE",
-        "user_id": user_id,
-        "channel_id": f"{channel}:{channel_user_id}",
-        "display_name": display_name,
-        "created_at": int(time.time()),
-        "status": "active",
-    })
+    table.put_item(
+        Item={
+            "pk": f"USER#{user_id}",
+            "sk": "PROFILE",
+            "user_id": user_id,
+            "channel_id": f"{channel}:{channel_user_id}",
+            "display_name": display_name,
+            "created_at": int(time.time()),
+            "status": "active",
+        }
+    )
     console.print(f"[green]✓ Added {channel}:{channel_user_id} ({display_name})[/green]")
 
 
@@ -1250,16 +1266,15 @@ def cmd_users(args: argparse.Namespace) -> None:
 
 # ── Outputs ───────────────────────────────────────────────────────────────
 
+
 def cmd_outputs(args: argparse.Namespace) -> None:
     config = load_config()
     session = get_boto_session(config)
     verify_credentials(session)
-    region = config["region"]
     prefix = config.get("stack_prefix", "OpenClaw")
     cfn = session.client("cloudformation")
 
-    stacks = ["Vpc", "Security", "Guardrails", "Observability",
-              "AgentCore", "Router", "Cron", "TokenMonitoring"]
+    stacks = ["Vpc", "Security", "Guardrails", "Observability", "AgentCore", "Router", "Cron", "TokenMonitoring"]
 
     for stack_suffix in stacks:
         stack_name = f"{prefix}{stack_suffix}"
@@ -1287,10 +1302,11 @@ def cmd_outputs(args: argparse.Namespace) -> None:
 
 # ── Status ────────────────────────────────────────────────────────────────
 
+
 def cmd_status(args: argparse.Namespace) -> None:
     config = load_config()
     session = get_boto_session(config)
-    account = verify_credentials(session)
+    verify_credentials(session)
     region = config["region"]
     prefix = config.get("stack_prefix", "OpenClaw")
     cfn = session.client("cloudformation")
@@ -1300,8 +1316,7 @@ def cmd_status(args: argparse.Namespace) -> None:
     t.add_column("Status")
     t.add_column("Last Updated")
 
-    stacks = ["Vpc", "Security", "Guardrails", "Observability",
-              "AgentCore", "Router", "Cron", "TokenMonitoring"]
+    stacks = ["Vpc", "Security", "Guardrails", "Observability", "AgentCore", "Router", "Cron", "TokenMonitoring"]
 
     for suffix in stacks:
         name = f"{prefix}{suffix}"
@@ -1335,6 +1350,7 @@ def cmd_status(args: argparse.Namespace) -> None:
 
 # ── Logs ──────────────────────────────────────────────────────────────────
 
+
 def cmd_logs(args: argparse.Namespace) -> None:
     config = load_config()
     session = get_boto_session(config)
@@ -1364,6 +1380,7 @@ def cmd_logs(args: argparse.Namespace) -> None:
 
 # ── Utilities ─────────────────────────────────────────────────────────────
 
+
 def _run_subprocess(cmd: list[str], input_text: str = None) -> None:
     """Run a subprocess, raising on failure."""
     log.info("Running: %s", " ".join(cmd[:3]) + (" ..." if len(cmd) > 3 else ""))
@@ -1379,6 +1396,7 @@ def _run_subprocess(cmd: list[str], input_text: str = None) -> None:
 
 def _find_executable(name: str) -> Optional[str]:
     import shutil
+
     return shutil.which(name)
 
 
@@ -1390,6 +1408,7 @@ def _wait_with_spinner(message: str, seconds: int) -> None:
 
 # ── Argument parser ───────────────────────────────────────────────────────
 
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cli.py",
@@ -1400,13 +1419,20 @@ def build_parser() -> argparse.ArgumentParser:
     # deploy
     p_deploy = sub.add_parser("deploy", help="Deploy OpenClaw infrastructure")
     p_deploy.add_argument("--phase", choices=["1", "2", "3"], help="Deploy a specific phase only")
-    p_deploy.add_argument("--local", action="store_true",
-                          help="Phase 2: build image from local openclaw/ directory instead of pulling from Docker Hub")
+    p_deploy.add_argument(
+        "--local",
+        action="store_true",
+        help="Phase 2: build image from local openclaw/ directory instead of pulling from Docker Hub",
+    )
 
     # build-image — build and push the openclaw image without full Phase 2 deploy
     p_build = sub.add_parser("build-image", help="Build openclaw image from local source and push to ECR")
-    p_build.add_argument("--source", choices=["local", "dockerhub"], default="local",
-                         help="Image source: local=build from openclaw/ dir, dockerhub=pull ffactory/openclaw:latest")
+    p_build.add_argument(
+        "--source",
+        choices=["local", "dockerhub"],
+        default="local",
+        help="Image source: local=build from openclaw/ dir, dockerhub=pull ffactory/openclaw:latest",
+    )
 
     # teardown
     p_tear = sub.add_parser("teardown", help="Remove all OpenClaw AWS resources")
@@ -1423,15 +1449,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Connect Google Workspace (Gmail, Calendar, Drive, Sheets, Docs)",
     )
     p_google.add_argument(
-        "--list", dest="list_accounts", action="store_true",
+        "--list",
+        dest="list_accounts",
+        action="store_true",
         help="List all configured Google accounts",
     )
     p_google.add_argument(
-        "--remove", metavar="EMAIL",
+        "--remove",
+        metavar="EMAIL",
         help="Remove a Google account",
     )
     p_google.add_argument(
-        "--set-default", metavar="EMAIL",
+        "--set-default",
+        metavar="EMAIL",
         help="Set the default Google account",
     )
 
@@ -1469,12 +1499,14 @@ def cmd_build_image(args: argparse.Namespace) -> None:
 
     ecr_repo = f"{account}.dkr.ecr.{region}.amazonaws.com/openclaw-runtime"
 
-    console.print(Panel(
-        f"[bold]OpenClaw Image Build[/bold]\n"
-        f"Source:  {'local openclaw/ directory' if use_local else config['docker_image']}\n"
-        f"Target:  {ecr_repo}:latest",
-        border_style="blue",
-    ))
+    console.print(
+        Panel(
+            f"[bold]OpenClaw Image Build[/bold]\n"
+            f"Source:  {'local openclaw/ directory' if use_local else config['docker_image']}\n"
+            f"Target:  {ecr_repo}:latest",
+            border_style="blue",
+        )
+    )
 
     # Ensure ECR repo exists
     ecr = session.client("ecr")
@@ -1490,9 +1522,9 @@ def cmd_build_image(args: argparse.Namespace) -> None:
     # Docker login
     token = ecr.get_authorization_token()["authorizationData"][0]["authorizationToken"]
     import base64
+
     username, password = base64.b64decode(token).decode().split(":", 1)
-    _run_subprocess(["docker", "login", "--username", username, "--password-stdin",
-                     ecr_repo], input_text=password)
+    _run_subprocess(["docker", "login", "--username", username, "--password-stdin", ecr_repo], input_text=password)
 
     if use_local:
         openclaw_dir = PROJECT_ROOT.parent / "openclaw"
@@ -1500,12 +1532,17 @@ def cmd_build_image(args: argparse.Namespace) -> None:
             console.print(f"[red]✗ openclaw/ directory not found at {openclaw_dir}[/red]")
             sys.exit(1)
         log.info("Building from %s (linux/arm64)...", openclaw_dir)
-        _run_subprocess([
-            "docker", "build",
-            "--platform", "linux/arm64",
-            "-t", f"{ecr_repo}:latest",
-            str(openclaw_dir),
-        ])
+        _run_subprocess(
+            [
+                "docker",
+                "build",
+                "--platform",
+                "linux/arm64",
+                "-t",
+                f"{ecr_repo}:latest",
+                str(openclaw_dir),
+            ]
+        )
         console.print("[green]✓ Image built from local source[/green]")
     else:
         docker_image = config["docker_image"]
@@ -1525,15 +1562,15 @@ def main():
     args = parser.parse_args()
 
     dispatch = {
-        "deploy":        cmd_deploy,
-        "build-image":   cmd_build_image,
-        "teardown":      cmd_teardown,
-        "setup":         cmd_setup,
-        "setup-google":  cmd_setup_google,
-        "users":         cmd_users,
-        "outputs":       cmd_outputs,
-        "status":        cmd_status,
-        "logs":          cmd_logs,
+        "deploy": cmd_deploy,
+        "build-image": cmd_build_image,
+        "teardown": cmd_teardown,
+        "setup": cmd_setup,
+        "setup-google": cmd_setup_google,
+        "users": cmd_users,
+        "outputs": cmd_outputs,
+        "status": cmd_status,
+        "logs": cmd_logs,
     }
     dispatch[args.command](args)
 

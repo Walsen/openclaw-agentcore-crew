@@ -14,6 +14,8 @@ The AgentCore Runtime itself is created by the deploy script in Phase 2.
 import aws_cdk as cdk
 from aws_cdk import (
     aws_iam as iam,
+)
+from aws_cdk import (
     aws_s3 as s3,
 )
 from constructs import Construct
@@ -99,9 +101,7 @@ class AgentCoreStack(cdk.Stack):
                 iam.PolicyStatement(
                     sid="BedrockGuardrails",
                     actions=["bedrock:ApplyGuardrail"],
-                    resources=[
-                        f"arn:aws:bedrock:{self.region}:{self.account}:guardrail/*"
-                    ],
+                    resources=[f"arn:aws:bedrock:{self.region}:{self.account}:guardrail/*"],
                 )
             )
 
@@ -130,9 +130,7 @@ class AgentCoreStack(cdk.Stack):
             iam.PolicyStatement(
                 sid="SecretsRead",
                 actions=["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
-                resources=[
-                    f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:openclaw/*"
-                ],
+                resources=[f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:openclaw/*"],
             )
         )
 
@@ -146,9 +144,7 @@ class AgentCoreStack(cdk.Stack):
                     "dynamodb:UpdateItem",
                     "dynamodb:Query",
                 ],
-                resources=[
-                    f"arn:aws:dynamodb:{self.region}:{self.account}:table/openclaw-*"
-                ],
+                resources=[f"arn:aws:dynamodb:{self.region}:{self.account}:table/openclaw-*"],
             )
         )
 
@@ -175,9 +171,7 @@ class AgentCoreStack(cdk.Stack):
                     "logs:CreateLogStream",
                     "logs:PutLogEvents",
                 ],
-                resources=[
-                    f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/agentcore/*"
-                ],
+                resources=[f"arn:aws:logs:{self.region}:{self.account}:log-group:/aws/agentcore/*"],
             )
         )
 
@@ -189,9 +183,7 @@ class AgentCoreStack(cdk.Stack):
         # at runtime via environment variables read by the gog (gogcli) skill.
         # The secret ARN is resolved at deploy time; the actual credential
         # values are fetched by the container on first use.
-        google_secret_arn = (
-            f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:openclaw/google-oauth"
-        )
+        google_secret_arn = f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:openclaw/google-oauth"
 
         self.container_env = {
             "S3_BUCKET": self.workspace_bucket.bucket_name,

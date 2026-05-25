@@ -8,8 +8,14 @@ to execute the scheduled task in the user's session.
 import aws_cdk as cdk
 from aws_cdk import (
     aws_iam as iam,
+)
+from aws_cdk import (
     aws_lambda as lambda_,
+)
+from aws_cdk import (
     aws_logs as logs,
+)
+from aws_cdk import (
     aws_scheduler as scheduler,
 )
 from constructs import Construct

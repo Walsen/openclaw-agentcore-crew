@@ -9,8 +9,14 @@ Creates:
 import aws_cdk as cdk
 from aws_cdk import (
     aws_dynamodb as dynamodb,
+)
+from aws_cdk import (
     aws_iam as iam,
+)
+from aws_cdk import (
     aws_lambda as lambda_,
+)
+from aws_cdk import (
     aws_logs as logs,
 )
 from constructs import Construct
@@ -39,12 +45,8 @@ class TokenMonitoringStack(cdk.Stack):
             self,
             "UsageTable",
             table_name=f"{prefix.lower()}-token-usage",
-            partition_key=dynamodb.Attribute(
-                name="pk", type=dynamodb.AttributeType.STRING
-            ),
-            sort_key=dynamodb.Attribute(
-                name="sk", type=dynamodb.AttributeType.STRING
-            ),
+            partition_key=dynamodb.Attribute(name="pk", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="sk", type=dynamodb.AttributeType.STRING),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             removal_policy=cdk.RemovalPolicy.DESTROY,
             time_to_live_attribute="ttl",
@@ -85,6 +87,4 @@ class TokenMonitoringStack(cdk.Stack):
 
         # --- Outputs ------------------------------------------------------
         cdk.CfnOutput(self, "UsageTableName", value=self.usage_table.table_name)
-        cdk.CfnOutput(
-            self, "ProcessorFunctionArn", value=self.processor_function.function_arn
-        )
+        cdk.CfnOutput(self, "ProcessorFunctionArn", value=self.processor_function.function_arn)

@@ -70,11 +70,13 @@ def handler(event, context):
 
         return {
             "statusCode": 200,
-            "body": json.dumps({
-                "tenant_id": tenant_id,
-                "daily_total": daily_total,
-                "budget_exceeded": budget_exceeded,
-            }),
+            "body": json.dumps(
+                {
+                    "tenant_id": tenant_id,
+                    "daily_total": daily_total,
+                    "budget_exceeded": budget_exceeded,
+                }
+            ),
         }
 
     except Exception:
