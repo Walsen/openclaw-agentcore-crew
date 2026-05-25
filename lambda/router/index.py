@@ -340,7 +340,7 @@ def _reply_telegram(channel_user_id: str, text: str) -> None:
     ).encode()
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
     try:
-        urllib.request.urlopen(req, timeout=10)
+        urllib.request.urlopen(req, timeout=10)  # nosec B310
     except Exception as e:
         logger.error("Telegram reply failed: %s", e)
 
@@ -363,7 +363,7 @@ def _reply_slack(channel_user_id: str, text: str) -> None:
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {bot_token}"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:  # nosec B310
             dm_data = json.loads(r.read())
         dm_channel = dm_data.get("channel", {}).get("id", "")
     except Exception as e:
@@ -376,7 +376,7 @@ def _reply_slack(channel_user_id: str, text: str) -> None:
         url_msg, data=payload_msg, headers={"Content-Type": "application/json", "Authorization": f"Bearer {bot_token}"}
     )
     try:
-        urllib.request.urlopen(req2, timeout=10)
+        urllib.request.urlopen(req2, timeout=10)  # nosec B310
     except Exception as e:
         logger.error("Slack reply failed: %s", e)
 
@@ -404,7 +404,7 @@ def _reply_whatsapp(channel_user_id: str, text: str) -> None:
         url, data=payload, headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
     )
     try:
-        urllib.request.urlopen(req, timeout=10)
+        urllib.request.urlopen(req, timeout=10)  # nosec B310
     except Exception as e:
         logger.error("WhatsApp reply failed: %s", e)
 
@@ -417,7 +417,7 @@ def _reply_discord(interaction_token: str, application_id: str, text: str) -> No
     payload = json.dumps({"content": text}).encode()
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
     try:
-        urllib.request.urlopen(req, timeout=10)
+        urllib.request.urlopen(req, timeout=10)  # nosec B310
     except Exception as e:
         logger.error("Discord reply failed: %s", e)
 

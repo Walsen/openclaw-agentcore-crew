@@ -695,7 +695,7 @@ def _teardown_telegram_webhook(session, region, dry_run, force):
 
     try:
         url = f"https://api.telegram.org/bot{token}/deleteWebhook"
-        urllib.request.urlopen(url, timeout=10)
+        urllib.request.urlopen(url, timeout=10)  # nosec B310
         console.print("[green]✓ Telegram webhook deregistered[/green]")
     except Exception as e:
         log.warning("Failed to deregister Telegram webhook: %s", e)
@@ -761,7 +761,7 @@ def _setup_telegram(session, sm, cfn, api_url, region, prefix):
     log.info("Registering webhook: %s", webhook_url)
     try:
         url = f"https://api.telegram.org/bot{token}/setWebhook?url={webhook_url}"
-        with urllib.request.urlopen(url, timeout=10) as r:
+        with urllib.request.urlopen(url, timeout=10) as r:  # nosec B310
             result = json.loads(r.read())
         if result.get("ok"):
             console.print("[green]✓ Telegram webhook registered[/green]")
