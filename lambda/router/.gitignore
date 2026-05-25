@@ -1,0 +1,8 @@
+# Pre-installed Lambda dependencies (ARM64 Linux wheels)
+# Installed via: uv pip install -r requirements.txt --target . --python-platform aarch64-manylinux_2_28 --python-version 3.12 --only-binary :all:
+cffi/
+cffi-*.dist-info/
+nacl/
+PyNaCl-*.dist-info/
+pycparser/
+pycparser-*.dist-info/

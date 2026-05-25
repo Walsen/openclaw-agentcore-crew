@@ -1,0 +1,33 @@
+# CDK
+cdk.out/
+.cdk.staging/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+*.egg
+
+# uv
+uv.lock
+
+# Environment
+.env
+local.env
+.bedrock_agentcore.yaml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+.devbox/
+
+# Sibling repo cloned for development — not part of this repo
+openclaw/

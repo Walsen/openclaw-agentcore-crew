@@ -1,0 +1,37 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.17.2/.schema/devbox.schema.json",
+  "packages": [
+    "python@latest",
+    "uv@latest",
+    "just@latest",
+    "jq@latest",
+    "yq@latest",
+    "awscli2@latest",
+    "nodejs@latest",
+    "nodePackages.aws-cdk@latest",
+    "git@latest"
+  ],
+  "shell": {
+    "init_hook": [
+      "echo 'OpenClaw AgentCore infra — run: just install' > /dev/null",
+      "[ -d .venv ] || uv venv --python python3",
+      "source .venv/bin/activate"
+    ],
+    "scripts": {
+      "install": [
+        "uv pip install -r requirements.txt"
+      ],
+      "synth": [
+        "uv pip install -q -r requirements.txt",
+        "cdk synth"
+      ],
+      "deploy": [
+        "uv pip install -q -r requirements.txt",
+        "./scripts/deploy.sh"
+      ],
+      "test": [
+        "echo \"No tests configured yet\" && exit 0"
+      ]
+    }
+  }
+}
