@@ -8,7 +8,8 @@
     "yq@latest",
     "awscli2@latest",
     "nodejs@latest",
-    "nodePackages.aws-cdk@latest"
+    "nodePackages.aws-cdk@latest",
+    "git@latest"
   ],
   "shell": {
     "init_hook": [
