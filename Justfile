@@ -83,6 +83,23 @@ setup-whatsapp:
 setup-discord:
     {{_cli}} setup discord
 
+# Set up Google Workspace (Gmail, Calendar, Drive, Sheets, Docs)
+# Run after Phase 1 is deployed. Re-run to rotate credentials or change scopes.
+setup-google:
+    {{_cli}} setup-google
+
+# List all configured Google accounts
+google-accounts:
+    {{_cli}} setup-google --list
+
+# Remove a Google account: just google-remove you@gmail.com
+google-remove email:
+    {{_cli}} setup-google --remove {{email}}
+
+# Set the default Google account: just google-default you@work.com
+google-default email:
+    {{_cli}} setup-google --set-default {{email}}
+
 # ── User Management ──────────────────────────────────────────────────────
 
 # List all registered users

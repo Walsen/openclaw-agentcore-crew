@@ -101,6 +101,58 @@ just setup-whatsapp
 just setup-discord
 ```
 
+## Google Workspace Integration
+
+Connect OpenClaw to one or more Google accounts (Gmail, Calendar, Drive, Sheets, Docs, Contacts) with a single OAuth setup per account.
+
+**Run after Phase 1 is deployed** (the secret must exist before Phase 2 injects it):
+
+```bash
+just setup-google          # add first account
+just setup-google          # run again to add a second account
+just google-accounts       # list all configured accounts
+just google-default you@work.com   # change the default
+just google-remove you@old.com     # remove an account
+```
+
+The wizard will:
+1. Walk you through creating a Google Cloud project and enabling the APIs (first time only — subsequent accounts can reuse the same OAuth client)
+2. Guide you through creating an OAuth 2.0 Desktop client
+3. Open a browser for the one-time authorization flow per account
+4. Store all credentials in a single Secrets Manager secret (`openclaw/google-oauth`)
+5. Save the default account email to `cdk.json`
+
+Then redeploy Phase 2 to inject the credentials into the container:
+
+```bash
+just deploy-phase2
+```
+
+**Scope options** (choose per account):
+- **Read-only** (recommended to start) — read Gmail, Calendar, Drive; cannot send or delete
+- **Full access** — read + send email, create/edit calendar events, edit Drive files
+
+**Example things you can ask OpenClaw:**
+- *"Check my work email for unread messages"*
+- *"Find all invoices in my personal Gmail this month and total the amounts"*
+- *"What meetings do I have on my work calendar this week?"*
+- *"Search my personal Drive for the Q1 budget spreadsheet"*
+- *"Send a reply from my work account to the last email from Alice"*
+
+**To change scopes or rotate a token**, re-run `just setup-google` with the same email address — it overwrites that account's entry. Then `just deploy-phase2`.
+
+**Secret structure** (`openclaw/google-oauth`):
+
+```json
+{
+  "accounts": {
+    "you@gmail.com":  { "client_id", "client_secret", "refresh_token", "scopes", "label": "personal" },
+    "you@work.com":   { "client_id", "client_secret", "refresh_token", "scopes", "label": "work" }
+  },
+  "default_account": "you@gmail.com"
+}
+```
+
 ## User Management
 
 ```bash
@@ -130,6 +182,7 @@ just remove-user telegram:123456789
 | `channels` | `["telegram","slack","whatsapp","discord"]` | Enabled channels |
 | `enable_guardrails` | `true` | Bedrock content guardrails |
 | `runtime_id` | — | Set automatically after Phase 2 |
+| `google_account` | — | Set automatically by `just setup-google` |
 
 ## Customizing the Agent Identity
 

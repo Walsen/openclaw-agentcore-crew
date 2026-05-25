@@ -271,6 +271,62 @@ def _deploy_phase2(config: dict, session: boto3.Session, account: str, region: s
         agentcore_env["GUARDRAIL_ID"] = guardrail_id
         agentcore_env["GUARDRAIL_VERSION"] = "DRAFT"
 
+    # Add Google OAuth env vars for all configured accounts.
+    #
+    # Secret schema (multi-account):
+    # {
+    #   "accounts": {
+    #     "you@gmail.com":   { "client_id", "client_secret", "refresh_token",
+    #                          "scopes", "scope_level", "label" },
+    #     "you@work.com":    { ... }
+    #   },
+    #   "default_account": "you@gmail.com"
+    # }
+    #
+    # The gog skill reads per-account env vars:
+    #   GOG_ACCOUNT_<SAFE_EMAIL>_CLIENT_ID / _CLIENT_SECRET / _REFRESH_TOKEN
+    # where SAFE_EMAIL is the address with @ and . replaced by _ (uppercased).
+    # GOG_ACCOUNTS lists all configured addresses (comma-separated).
+    # GOG_DEFAULT_ACCOUNT is the one used when no account is specified.
+    google_secret_arn = (
+        f"arn:aws:secretsmanager:{region}:{account}:secret:openclaw/google-oauth"
+    )
+    sm = session.client("secretsmanager")
+    try:
+        google_secret_raw = sm.get_secret_value(SecretId="openclaw/google-oauth")["SecretString"]
+        google_store = json.loads(google_secret_raw) if google_secret_raw else {}
+        accounts = google_store.get("accounts", {})
+
+        # Back-compat: single-account format written by older setup-google
+        if not accounts and google_store.get("refresh_token"):
+            email = google_store.get("account", "")
+            accounts = {email: google_store}
+            log.info("Migrating single-account Google secret to multi-account format")
+
+        if accounts:
+            agentcore_env["GOG_CREDENTIALS_SECRET_ARN"] = google_secret_arn
+            agentcore_env["GOG_ACCOUNTS"] = ",".join(accounts.keys())
+            agentcore_env["GOG_DEFAULT_ACCOUNT"] = google_store.get(
+                "default_account", next(iter(accounts))
+            )
+            for email, creds in accounts.items():
+                safe = email.upper().replace("@", "_AT_").replace(".", "_")
+                agentcore_env[f"GOG_ACCOUNT_{safe}_CLIENT_ID"]     = creds.get("client_id", "")
+                agentcore_env[f"GOG_ACCOUNT_{safe}_CLIENT_SECRET"] = creds.get("client_secret", "")
+                agentcore_env[f"GOG_ACCOUNT_{safe}_REFRESH_TOKEN"] = creds.get("refresh_token", "")
+                agentcore_env[f"GOG_ACCOUNT_{safe}_SCOPES"]        = ",".join(creds.get("scopes", []))
+                agentcore_env[f"GOG_ACCOUNT_{safe}_LABEL"]         = creds.get("label", email)
+            log.info(
+                "Google OAuth: injecting %d account(s): %s",
+                len(accounts), ", ".join(accounts.keys()),
+            )
+        else:
+            log.info("Google OAuth secret has no accounts — run `just setup-google`")
+    except sm.exceptions.ResourceNotFoundException:
+        log.info("Google OAuth secret not yet created — run `just setup-google` after Phase 1")
+    except json.JSONDecodeError:
+        log.info("Google OAuth secret is empty — run `just setup-google` to populate")
+
     # Deploy via boto3 bedrock-agentcore-control (no separate CLI needed)
     log.info("Deploying AgentCore Runtime via boto3 bedrock-agentcore-control...")
     agentcore_control = session.client("bedrock-agentcore-control", region_name=region)
@@ -781,6 +837,329 @@ def _setup_discord(sm, api_url, region):
     console.print("\n[green]Done![/green] Use slash commands or DM the bot to test.")
 
 
+# ── Google OAuth Setup ────────────────────────────────────────────────────
+
+def _google_scope_options() -> dict:
+    return {
+        "1": {
+            "label": "Read-only (safe default) — read Gmail, Calendar, Drive; cannot send or modify",
+            "scopes": [
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/calendar.readonly",
+                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/spreadsheets.readonly",
+                "https://www.googleapis.com/auth/documents.readonly",
+                "https://www.googleapis.com/auth/contacts.readonly",
+            ],
+        },
+        "2": {
+            "label": "Full access — read + send email, create/edit calendar events, edit Drive files",
+            "scopes": [
+                "https://www.googleapis.com/auth/gmail.modify",
+                "https://mail.google.com/",
+                "https://www.googleapis.com/auth/calendar",
+                "https://www.googleapis.com/auth/drive",
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/documents",
+                "https://www.googleapis.com/auth/contacts",
+            ],
+        },
+    }
+
+
+def _run_oauth_flow(client_id: str, client_secret: str, scopes: list[str],
+                    account_hint: str) -> str:
+    """Run the local OAuth browser flow and return the refresh token."""
+    try:
+        from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore
+    except ImportError:
+        console.print(
+            "[red]✗ google-auth-oauthlib is not installed.[/red]\n"
+            "  Run: [bold]uv pip install google-auth-oauthlib[/bold]"
+        )
+        sys.exit(1)
+
+    client_config = {
+        "installed": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob", "http://localhost"],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+    }
+    console.print(
+        f"\nA browser window will open. Sign in with [bold]{account_hint}[/bold] "
+        "and grant the requested permissions.\n"
+    )
+    try:
+        flow = InstalledAppFlow.from_client_config(client_config, scopes=scopes)
+        credentials = flow.run_local_server(port=0, open_browser=True)
+        refresh_token = credentials.refresh_token
+        if not refresh_token:
+            console.print(
+                "[red]✗ No refresh token returned.[/red]\n"
+                "  This happens when the app was previously authorized.\n"
+                "  Go to [bold]https://myaccount.google.com/permissions[/bold],\n"
+                "  revoke access for 'OpenClaw', then re-run this wizard."
+            )
+            sys.exit(1)
+        return refresh_token
+    except Exception as e:
+        console.print(f"[red]✗ OAuth flow failed: {e}[/red]")
+        sys.exit(1)
+
+
+def _load_google_store(sm) -> dict:
+    """Load the current multi-account store from Secrets Manager, or return empty."""
+    try:
+        raw = sm.get_secret_value(SecretId="openclaw/google-oauth")["SecretString"]
+        store = json.loads(raw) if raw else {}
+        # Back-compat: migrate single-account format
+        if store and "accounts" not in store and store.get("refresh_token"):
+            email = store.get("account", "")
+            store = {
+                "accounts": {email: store},
+                "default_account": email,
+            }
+        return store
+    except sm.exceptions.ResourceNotFoundException:
+        return {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _save_google_store(sm, store: dict) -> None:
+    """Write the multi-account store back to Secrets Manager."""
+    payload = json.dumps(store, indent=2)
+    try:
+        sm.update_secret(SecretId="openclaw/google-oauth", SecretString=payload)
+    except sm.exceptions.ResourceNotFoundException:
+        sm.create_secret(
+            Name="openclaw/google-oauth",
+            Description="Google OAuth 2.0 credentials for Gmail/Calendar/Drive/Sheets/Docs",
+            SecretString=payload,
+        )
+
+
+def cmd_setup_google(args: argparse.Namespace) -> None:
+    """Interactive wizard to add or update a Google account for Gmail/Calendar/Drive.
+
+    Supports multiple accounts. Run once per account — existing accounts are
+    preserved. Use --set-default to change which account OpenClaw uses when
+    you don't specify one explicitly.
+
+    Usage:
+        just setup-google                  # add / update an account
+        just setup-google --list           # list configured accounts
+        just setup-google --remove EMAIL   # remove an account
+        just setup-google --set-default EMAIL
+    """
+    config = load_config()
+    session = get_boto_session(config)
+    verify_credentials(session)
+    sm = session.client("secretsmanager")
+
+    store = _load_google_store(sm)
+    accounts: dict = store.get("accounts", {})
+
+    # ── --list ────────────────────────────────────────────────────────────
+    if getattr(args, "list_accounts", False):
+        if not accounts:
+            console.print("[yellow]No Google accounts configured yet.[/yellow]")
+            console.print("Run [bold]just setup-google[/bold] to add one.")
+            return
+        default = store.get("default_account", "")
+        t = Table(title="Configured Google Accounts", border_style="blue")
+        t.add_column("Account", style="cyan")
+        t.add_column("Label")
+        t.add_column("Scope")
+        t.add_column("Default")
+        for email, creds in accounts.items():
+            t.add_row(
+                email,
+                creds.get("label", ""),
+                creds.get("scope_level", "unknown"),
+                "✓" if email == default else "",
+            )
+        console.print(t)
+        return
+
+    # ── --remove ──────────────────────────────────────────────────────────
+    remove_email = getattr(args, "remove", None)
+    if remove_email:
+        if remove_email not in accounts:
+            console.print(f"[red]✗ Account not found: {remove_email}[/red]")
+            sys.exit(1)
+        del accounts[remove_email]
+        if store.get("default_account") == remove_email:
+            store["default_account"] = next(iter(accounts), "")
+        store["accounts"] = accounts
+        _save_google_store(sm, store)
+        console.print(f"[green]✓ Removed {remove_email}[/green]")
+        if accounts:
+            console.print(f"  New default: {store['default_account']}")
+            console.print("  Run [bold]just deploy-phase2[/bold] to apply.")
+        return
+
+    # ── --set-default ─────────────────────────────────────────────────────
+    set_default = getattr(args, "set_default", None)
+    if set_default:
+        if set_default not in accounts:
+            console.print(f"[red]✗ Account not found: {set_default}[/red]")
+            console.print(f"  Configured: {', '.join(accounts.keys()) or 'none'}")
+            sys.exit(1)
+        store["default_account"] = set_default
+        store["accounts"] = accounts
+        _save_google_store(sm, store)
+        save_config_value("google_account", set_default)
+        console.print(f"[green]✓ Default account set to {set_default}[/green]")
+        console.print("  Run [bold]just deploy-phase2[/bold] to apply.")
+        return
+
+    # ── Add / update an account ───────────────────────────────────────────
+    console.print(Panel(
+        "[bold]OpenClaw — Google Workspace Setup[/bold]\n\n"
+        "Connect a Google account so OpenClaw can access Gmail, Calendar,\n"
+        "Drive, Sheets, Docs, and Contacts.\n\n"
+        + (
+            f"[dim]Currently configured: {', '.join(accounts.keys())}[/dim]\n\n"
+            if accounts else ""
+        )
+        + "[yellow]You will need a web browser on this machine to complete\n"
+          "the one-time OAuth authorization flow.[/yellow]",
+        border_style="blue",
+    ))
+
+    # ── Step 1: Google Cloud Console ──────────────────────────────────────
+    console.print("\n[bold cyan]━━━ Step 1: Google Cloud Project ━━━[/bold cyan]")
+
+    # If accounts already exist, offer to reuse the same OAuth client
+    reuse_client = False
+    existing_client_id = ""
+    existing_client_secret = ""
+    if accounts:
+        first = next(iter(accounts.values()))
+        existing_client_id = first.get("client_id", "")
+        console.print(
+            f"\nYou already have an OAuth client configured "
+            f"(client_id: [dim]{existing_client_id[:30]}...[/dim])."
+        )
+        reuse = Prompt.ask(
+            "Reuse the same OAuth client for this account?",
+            choices=["yes", "no"],
+            default="yes",
+        )
+        reuse_client = reuse == "yes"
+        if reuse_client:
+            existing_client_secret = first.get("client_secret", "")
+
+    if not reuse_client:
+        console.print(
+            "\n1. Open [bold]https://console.cloud.google.com[/bold]\n"
+            "2. Create or select a project\n"
+            "3. Enable these APIs under [bold]APIs & Services → Library[/bold]:\n"
+            "   • Gmail API\n"
+            "   • Google Calendar API\n"
+            "   • Google Drive API\n"
+            "   • Google Sheets API\n"
+            "   • Google Docs API\n"
+            "   • People API  (for Contacts)\n"
+            "4. Go to [bold]APIs & Services → OAuth consent screen[/bold]\n"
+            "   • User Type: External\n"
+            "   • App name: OpenClaw\n"
+            "   • Add the new account email as a test user\n"
+            "5. Go to [bold]APIs & Services → Credentials → Create Credentials → OAuth client ID[/bold]\n"
+            "   • Application type: [bold]Desktop app[/bold]\n"
+            "   • Name: OpenClaw\n"
+        )
+        Prompt.ask("Press Enter when you have the Client ID and Client Secret ready")
+
+    client_id = existing_client_id if reuse_client else Prompt.ask(
+        "Client ID (ends with .apps.googleusercontent.com)"
+    )
+    client_secret = existing_client_secret if reuse_client else Prompt.ask("Client Secret")
+
+    google_account = Prompt.ask("Google account email to add")
+    label = Prompt.ask("Short label for this account (e.g. personal, work)", default=google_account.split("@")[0])
+
+    # ── Step 2: Choose scopes ─────────────────────────────────────────────
+    console.print("\n[bold cyan]━━━ Step 2: Access Scopes ━━━[/bold cyan]")
+    console.print(
+        "\nChoose the level of access OpenClaw will have for this account.\n"
+        "You can use different scope levels per account.\n"
+    )
+    scope_opts = _google_scope_options()
+    for key, opt in scope_opts.items():
+        console.print(f"  [bold]{key}[/bold]. {opt['label']}")
+    scope_choice = Prompt.ask("Choose scope level", choices=["1", "2"], default="1")
+    chosen_scopes = scope_opts[scope_choice]["scopes"]
+    scope_level = "readonly" if scope_choice == "1" else "full"
+    console.print(f"[green]✓ Using {scope_level} access for {google_account}[/green]")
+
+    # ── Step 3: OAuth authorization flow ─────────────────────────────────
+    console.print("\n[bold cyan]━━━ Step 3: Authorize OpenClaw ━━━[/bold cyan]")
+    refresh_token = _run_oauth_flow(client_id, client_secret, chosen_scopes, google_account)
+    console.print("[green]✓ Authorization successful[/green]")
+
+    # ── Step 4: Store in Secrets Manager ─────────────────────────────────
+    console.print("\n[bold cyan]━━━ Step 4: Storing Credentials ━━━[/bold cyan]")
+
+    accounts[google_account] = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+        "scopes": chosen_scopes,
+        "scope_level": scope_level,
+        "label": label,
+    }
+
+    # First account becomes the default; subsequent ones don't change it
+    # unless the user explicitly asks
+    is_first = len(accounts) == 1
+    if is_first:
+        store["default_account"] = google_account
+    elif not store.get("default_account"):
+        store["default_account"] = google_account
+
+    store["accounts"] = accounts
+    _save_google_store(sm, store)
+    console.print("[green]✓ Credentials stored in Secrets Manager (openclaw/google-oauth)[/green]")
+
+    # ── Step 5: Update cdk.json default ──────────────────────────────────
+    save_config_value("google_account", store["default_account"])
+
+    # ── Ask about setting as default if not the first ─────────────────────
+    if not is_first and store.get("default_account") != google_account:
+        make_default = Prompt.ask(
+            f"Set {google_account} as the default account?",
+            choices=["yes", "no"],
+            default="no",
+        )
+        if make_default == "yes":
+            store["default_account"] = google_account
+            _save_google_store(sm, store)
+            save_config_value("google_account", google_account)
+
+    # ── Done ──────────────────────────────────────────────────────────────
+    all_emails = list(accounts.keys())
+    console.print(Panel(
+        f"[bold green]✓ {google_account} connected![/bold green]\n\n"
+        f"Label:    {label}\n"
+        f"Access:   {scope_level}\n"
+        f"Default:  {store['default_account']}\n"
+        f"All accounts ({len(all_emails)}): {', '.join(all_emails)}\n\n"
+        "Next steps:\n"
+        "  1. Run [bold]just deploy-phase2[/bold] to inject credentials into the container\n"
+        "  2. Add more accounts with [bold]just setup-google[/bold]\n"
+        "  3. Then message OpenClaw:\n"
+        '     [italic]"Check my work email for unread messages"[/italic]\n'
+        '     [italic]"Find all invoices in my personal Gmail this month"[/italic]\n'
+        '     [italic]"What\'s on my work calendar this week?"[/italic]',
+        border_style="green",
+    ))
+
+
 # ── User Management ───────────────────────────────────────────────────────
 
 CHANNEL_PREFIX_MAP = {"telegram": "tg", "slack": "sl", "whatsapp": "wa", "discord": "dc"}
@@ -1038,6 +1417,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup = sub.add_parser("setup", help="Configure a messaging channel")
     p_setup.add_argument("channel", choices=["telegram", "slack", "whatsapp", "discord"])
 
+    # setup-google
+    p_google = sub.add_parser(
+        "setup-google",
+        help="Connect Google Workspace (Gmail, Calendar, Drive, Sheets, Docs)",
+    )
+    p_google.add_argument(
+        "--list", dest="list_accounts", action="store_true",
+        help="List all configured Google accounts",
+    )
+    p_google.add_argument(
+        "--remove", metavar="EMAIL",
+        help="Remove a Google account",
+    )
+    p_google.add_argument(
+        "--set-default", metavar="EMAIL",
+        help="Set the default Google account",
+    )
+
     # users
     p_users = sub.add_parser("users", help="Manage the user allowlist")
     users_sub = p_users.add_subparsers(dest="action", required=True)
@@ -1128,14 +1525,15 @@ def main():
     args = parser.parse_args()
 
     dispatch = {
-        "deploy":       cmd_deploy,
-        "build-image":  cmd_build_image,
-        "teardown":     cmd_teardown,
-        "setup":        cmd_setup,
-        "users":        cmd_users,
-        "outputs":      cmd_outputs,
-        "status":       cmd_status,
-        "logs":         cmd_logs,
+        "deploy":        cmd_deploy,
+        "build-image":   cmd_build_image,
+        "teardown":      cmd_teardown,
+        "setup":         cmd_setup,
+        "setup-google":  cmd_setup_google,
+        "users":         cmd_users,
+        "outputs":       cmd_outputs,
+        "status":        cmd_status,
+        "logs":          cmd_logs,
     }
     dispatch[args.command](args)
 

@@ -28,3 +28,6 @@ local.env
 Thumbs.db
 
 .devbox/
+
+# Sibling repo cloned for development — not part of this repo
+openclaw/

@@ -5,3 +5,5 @@ botocore>=1.42.50
 rich==14.0.0
 click==8.1.8
 pyyaml==6.0.2
+# Google OAuth — required for `just setup-google`
+google-auth-oauthlib==1.2.1

@@ -3,6 +3,7 @@
 This stack creates the resources that the AgentCore Runtime needs:
   - IAM execution role with permissions for Bedrock, S3, DynamoDB, Secrets
   - S3 bucket for per-user workspace persistence
+  - Google OAuth environment variables for Gmail/Calendar/Drive integration
 
 The AgentCore Runtime runs in PUBLIC network mode (fully managed by AWS),
 so no VPC, security groups, or subnets are needed here.
@@ -184,6 +185,14 @@ class AgentCoreStack(cdk.Stack):
         guardrail_id = guardrails_stack.guardrail_id or ""
         guardrail_version = guardrails_stack.guardrail_version or ""
 
+        # Google OAuth credentials are stored in Secrets Manager and injected
+        # at runtime via environment variables read by the gog (gogcli) skill.
+        # The secret ARN is resolved at deploy time; the actual credential
+        # values are fetched by the container on first use.
+        google_secret_arn = (
+            f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:openclaw/google-oauth"
+        )
+
         self.container_env = {
             "S3_BUCKET": self.workspace_bucket.bucket_name,
             "STACK_NAME": prefix,
@@ -191,9 +200,23 @@ class AgentCoreStack(cdk.Stack):
             "BEDROCK_MODEL_ID": model_id,
             "GUARDRAIL_ID": guardrail_id,
             "GUARDRAIL_VERSION": guardrail_version,
+            # Google OAuth — values resolved from Secrets Manager at container
+            # startup by the entrypoint or gog skill initialisation.
+            # GOG_CREDENTIALS_SECRET_ARN tells the skill where to fetch creds.
+            "GOG_CREDENTIALS_SECRET_ARN": google_secret_arn,
+            # GOG_ACCOUNT is the Google account email; populated by setup-google
+            # and stored in the secret JSON under the "account" key.
+            # The container entrypoint reads the secret and exports these vars.
+            "GOG_ACCOUNT": self.node.try_get_context("google_account") or "",
         }
 
         # --- Outputs ------------------------------------------------------
         cdk.CfnOutput(self, "ExecutionRoleArn", value=self.execution_role.role_arn)
         cdk.CfnOutput(self, "WorkspaceBucketName", value=self.workspace_bucket.bucket_name)
         cdk.CfnOutput(self, "DockerImage", value=docker_image)
+        cdk.CfnOutput(
+            self,
+            "GoogleSecretArn",
+            value=google_secret_arn,
+            description="Google OAuth secret — run `just setup-google` to populate",
+        )
