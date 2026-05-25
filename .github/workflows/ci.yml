@@ -49,6 +49,11 @@ jobs:
         env:
           CDK_DEFAULT_ACCOUNT: "123456789012"
           CDK_DEFAULT_REGION: "us-east-1"
+          # Override aws_profile so CDK doesn't try to load a named profile
+          # that doesn't exist in CI — use dummy credentials instead
+          AWS_ACCESS_KEY_ID: "AKIAIOSFODNN7EXAMPLE"
+          AWS_SECRET_ACCESS_KEY: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+          AWS_DEFAULT_REGION: "us-east-1"
 
   security:
     runs-on: ubuntu-latest

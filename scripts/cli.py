@@ -68,9 +68,16 @@ def save_config_value(key: str, value: str) -> None:
 
 
 def get_boto_session(config: dict) -> boto3.Session:
-    """Create a boto3 session using SSO profile from cdk.json."""
+    """Create a boto3 session using SSO profile from cdk.json.
+
+    If AWS_ACCESS_KEY_ID is already set in the environment (e.g. CI),
+    skip the named profile and use the ambient credentials directly.
+    """
     profile = config.get("aws_profile", "")
     region = config.get("region", "us-east-1")
+    # In CI, AWS_ACCESS_KEY_ID is set — don't try to load a named profile
+    if os.environ.get("AWS_ACCESS_KEY_ID"):
+        return boto3.Session(region_name=region)
     if profile and profile not in ("None", "REPLACE_WITH_YOUR_SSO_PROFILE_NAME"):
         return boto3.Session(profile_name=profile, region_name=region)
     return boto3.Session(region_name=region)
@@ -138,7 +145,8 @@ def run_cdk(args: list[str], config: dict, dry_run: bool = False) -> None:
     env["JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION"] = "1"
     env["VIRTUAL_ENV"] = str(PROJECT_ROOT / ".venv")
     env["PATH"] = str(PROJECT_ROOT / ".venv" / "bin") + os.pathsep + env.get("PATH", "")
-    if profile and profile not in ("None", "REPLACE_WITH_YOUR_SSO_PROFILE_NAME"):
+    # Skip named profile when ambient credentials are already present (e.g. CI)
+    if not env.get("AWS_ACCESS_KEY_ID") and profile and profile not in ("None", "REPLACE_WITH_YOUR_SSO_PROFILE_NAME"):
         env["AWS_PROFILE"] = profile
 
     cmd = ["cdk"] + args
