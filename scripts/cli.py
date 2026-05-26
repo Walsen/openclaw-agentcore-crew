@@ -73,11 +73,12 @@ def get_boto_session(config: dict) -> boto3.Session:
     If AWS_ACCESS_KEY_ID is already set in the environment (e.g. CI),
     skip the named profile and use the ambient credentials directly.
     """
-    profile = config.get("aws_profile", "")
     region = config.get("region", "us-east-1")
-    # In CI, AWS_ACCESS_KEY_ID is set — don't try to load a named profile
+    # In CI, AWS_ACCESS_KEY_ID is set — use ambient credentials directly
     if os.environ.get("AWS_ACCESS_KEY_ID"):
         return boto3.Session(region_name=region)
+    # Prefer AWS_PROFILE env var (set in .envrc) over cdk.json value
+    profile = os.environ.get("AWS_PROFILE") or config.get("aws_profile", "")
     if profile and profile not in ("None", "REPLACE_WITH_YOUR_SSO_PROFILE_NAME"):
         return boto3.Session(profile_name=profile, region_name=region)
     return boto3.Session(region_name=region)
@@ -138,16 +139,18 @@ def stack_exists(cfn: boto3.client, stack_name: str) -> bool:
 
 def run_cdk(args: list[str], config: dict, dry_run: bool = False) -> None:
     """Run a CDK command with the correct profile and region."""
-    profile = config.get("aws_profile", "")
     region = config.get("region", "us-east-1")
     env = os.environ.copy()
     env["AWS_DEFAULT_REGION"] = region
     env["JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION"] = "1"
     env["VIRTUAL_ENV"] = str(PROJECT_ROOT / ".venv")
     env["PATH"] = str(PROJECT_ROOT / ".venv" / "bin") + os.pathsep + env.get("PATH", "")
-    # Skip named profile when ambient credentials are already present (e.g. CI)
-    if not env.get("AWS_ACCESS_KEY_ID") and profile and profile not in ("None", "REPLACE_WITH_YOUR_SSO_PROFILE_NAME"):
-        env["AWS_PROFILE"] = profile
+    # Use AWS_PROFILE from environment (set by .envrc) if not already set.
+    # Skip entirely when ambient credentials are present (CI).
+    if not env.get("AWS_ACCESS_KEY_ID") and not env.get("AWS_PROFILE"):
+        profile = config.get("aws_profile", "")
+        if profile and profile not in ("None", "REPLACE_WITH_YOUR_SSO_PROFILE_NAME"):
+            env["AWS_PROFILE"] = profile
 
     cmd = ["cdk"] + args
     if dry_run:
