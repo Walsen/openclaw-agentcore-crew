@@ -908,7 +908,7 @@ def _run_oauth_flow(client_id: str, client_secret: str, scopes: list[str], accou
         "installed": {
             "client_id": client_id,
             "client_secret": client_secret,
-            "redirect_uris": ["urn:ietf:wg:oauth:2.0:oob", "http://localhost"],
+            "redirect_uris": ["http://localhost"],
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
         }
@@ -918,7 +918,12 @@ def _run_oauth_flow(client_id: str, client_secret: str, scopes: list[str], accou
     )
     try:
         flow = InstalledAppFlow.from_client_config(client_config, scopes=scopes)
-        credentials = flow.run_local_server(port=0, open_browser=True)
+        credentials = flow.run_local_server(
+            port=0,
+            open_browser=True,
+            access_type="offline",
+            prompt="consent",
+        )
         refresh_token = credentials.refresh_token
         if not refresh_token:
             console.print(

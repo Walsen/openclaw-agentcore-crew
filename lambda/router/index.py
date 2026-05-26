@@ -335,7 +335,6 @@ def _reply_telegram(channel_user_id: str, text: str) -> None:
         {
             "chat_id": channel_user_id,
             "text": text,
-            "parse_mode": "Markdown",
         }
     ).encode()
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
