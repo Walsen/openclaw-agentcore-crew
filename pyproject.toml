@@ -1,3 +1,19 @@
+[project]
+name = "openclaw-agentcore-crew"
+version = "0.1.0"
+description = "AWS CDK infrastructure for deploying OpenClaw on Amazon Bedrock AgentCore"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aws-cdk-lib==2.252.0",
+    "constructs>=10.0.0,<11.0.0",
+    "boto3>=1.42.50",
+    "botocore>=1.42.50",
+    "rich>=14.0.0",
+    # Optional: required for `just setup-google` (Google Workspace OAuth flow)
+    "google-auth-oauthlib>=1.2.1",
+]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 120
