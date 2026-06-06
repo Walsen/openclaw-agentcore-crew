@@ -100,6 +100,19 @@ google-remove email:
 google-default email:
     {{_cli}} setup-google --set-default {{email}}
 
+# Re-mint an expired/revoked refresh token for a Google account, then redeploy.
+# Usage: just refresh-google-token            (default account)
+#        just refresh-google-token you@gmail.com
+refresh-google-token email="":
+    {{_cli}} refresh-google-token {{email}}
+
+# Tail the AgentCore runtime logs filtered for gog / Google Workspace init.
+# Use this after a deploy to confirm credentials loaded (look for `auth doctor`).
+# Usage: just gog-logs            (follow, last 30m)
+#        just gog-logs --since 1h
+gog-logs *args:
+    {{_cli}} gog-logs {{args}}
+
 # ── User Management ──────────────────────────────────────────────────────
 
 # List all registered users
