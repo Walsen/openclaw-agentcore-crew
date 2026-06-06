@@ -13,6 +13,9 @@ The AgentCore Runtime itself is created by the deploy script in Phase 2.
 
 import aws_cdk as cdk
 from aws_cdk import (
+    aws_dynamodb as dynamodb,
+)
+from aws_cdk import (
     aws_iam as iam,
 )
 from aws_cdk import (
@@ -62,6 +65,31 @@ class AgentCoreStack(cdk.Stack):
                     prefix="workspaces/",
                 ),
             ],
+        )
+
+        # --- DynamoDB application table -----------------------------------
+        # The runtime container (server.py, permissions.py, skill_loader.py,
+        # workspace_assembler.py) uses a SINGLE-TABLE design keyed by
+        # PK (HASH) / SK (RANGE), both String. It reads/writes items such as
+        # ORG#acme / CONFIG#*, CONV#*, SESSION#*, AUDIT#*, EMP#*, POS#*,
+        # MAPPING#*, KB#*. The table name defaults to STACK_NAME (the prefix)
+        # because the runtime resolves DYNAMODB_TABLE -> STACK_NAME.
+        #
+        # NOTE: this is DISTINCT from the router's `<prefix>-identity` table
+        # (lowercase pk/sk, USER#/PROFILE schema). They are different data
+        # models and must not be conflated.
+        self.app_table = dynamodb.Table(
+            self,
+            "AppTable",
+            table_name=prefix,  # = STACK_NAME the runtime expects (e.g. "OpenClaw")
+            partition_key=dynamodb.Attribute(name="PK", type=dynamodb.AttributeType.STRING),
+            sort_key=dynamodb.Attribute(name="SK", type=dynamodb.AttributeType.STRING),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            encryption=dynamodb.TableEncryption.AWS_MANAGED,
+            point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
+                point_in_time_recovery_enabled=True,
+            ),
+            removal_policy=cdk.RemovalPolicy.RETAIN,
         )
 
         # --- IAM execution role -------------------------------------------
@@ -134,7 +162,13 @@ class AgentCoreStack(cdk.Stack):
             )
         )
 
-        # DynamoDB (identity table created in router stack — grant later)
+        # DynamoDB
+        #  - The runtime's application table (self.app_table, named after the
+        #    prefix e.g. "OpenClaw"). The `openclaw-*` wildcard below does NOT
+        #    match it (case-sensitive + no dash), so grant it explicitly.
+        #  - The `openclaw-*` wildcard covers the router's `<prefix>-identity`
+        #    table and any future lowercase-dashed tables.
+        self.app_table.grant_read_write_data(self.execution_role)
         self.execution_role.add_to_policy(
             iam.PolicyStatement(
                 sid="DynamoDBAccess",
@@ -144,7 +178,10 @@ class AgentCoreStack(cdk.Stack):
                     "dynamodb:UpdateItem",
                     "dynamodb:Query",
                 ],
-                resources=[f"arn:aws:dynamodb:{self.region}:{self.account}:table/openclaw-*"],
+                resources=[
+                    f"arn:aws:dynamodb:{self.region}:{self.account}:table/openclaw-*",
+                    f"arn:aws:dynamodb:{self.region}:{self.account}:table/openclaw-*/index/*",
+                ],
             )
         )
 
@@ -205,6 +242,7 @@ class AgentCoreStack(cdk.Stack):
         # --- Outputs ------------------------------------------------------
         cdk.CfnOutput(self, "ExecutionRoleArn", value=self.execution_role.role_arn)
         cdk.CfnOutput(self, "WorkspaceBucketName", value=self.workspace_bucket.bucket_name)
+        cdk.CfnOutput(self, "AppTableName", value=self.app_table.table_name)
         cdk.CfnOutput(self, "DockerImage", value=docker_image)
         cdk.CfnOutput(
             self,
