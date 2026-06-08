@@ -888,6 +888,7 @@ def _setup_discord(sm, api_url, region):
 def _google_scope_options() -> dict:
     return {
         "1": {
+            "level": "readonly",
             "label": "Read-only (safe default) — read Gmail, Calendar, Drive; cannot send or modify",
             "scopes": [
                 "https://www.googleapis.com/auth/gmail.readonly",
@@ -899,6 +900,7 @@ def _google_scope_options() -> dict:
             ],
         },
         "2": {
+            "level": "full",
             "label": "Full access — read + send email, create/edit calendar events, edit Drive files",
             "scopes": [
                 "https://www.googleapis.com/auth/gmail.modify",
@@ -910,7 +912,35 @@ def _google_scope_options() -> dict:
                 "https://www.googleapis.com/auth/contacts",
             ],
         },
+        "3": {
+            "level": "docs-write",
+            "label": (
+                "Read all + write Docs (create/edit Google Docs; manage app-created Drive files). "
+                "Cannot send email or touch pre-existing Drive files. No restricted-scope upgrade vs read-only."
+            ),
+            "scopes": [
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/calendar.readonly",
+                # Read any existing Drive file...
+                "https://www.googleapis.com/auth/drive.readonly",
+                # ...but write only files OpenClaw itself creates (least privilege,
+                # non-restricted — avoids full `drive` and its CASA burden).
+                "https://www.googleapis.com/auth/drive.file",
+                "https://www.googleapis.com/auth/spreadsheets.readonly",
+                # Read + write Google Docs content.
+                "https://www.googleapis.com/auth/documents",
+                "https://www.googleapis.com/auth/contacts.readonly",
+            ],
+        },
     }
+
+
+def _scopes_for_level(level: str) -> list[str] | None:
+    """Return the scope list for a named level (readonly|full|docs-write)."""
+    for opt in _google_scope_options().values():
+        if opt["level"] == level:
+            return opt["scopes"]
+    return None
 
 
 def _run_oauth_flow(client_id: str, client_secret: str, scopes: list[str], account_hint: str) -> str:
@@ -1137,9 +1167,9 @@ def cmd_setup_google(args: argparse.Namespace) -> None:
     scope_opts = _google_scope_options()
     for key, opt in scope_opts.items():
         console.print(f"  [bold]{key}[/bold]. {opt['label']}")
-    scope_choice = Prompt.ask("Choose scope level", choices=["1", "2"], default="1")
+    scope_choice = Prompt.ask("Choose scope level", choices=list(scope_opts.keys()), default="1")
     chosen_scopes = scope_opts[scope_choice]["scopes"]
-    scope_level = "readonly" if scope_choice == "1" else "full"
+    scope_level = scope_opts[scope_choice]["level"]
     console.print(f"[green]✓ Using {scope_level} access for {google_account}[/green]")
 
     # ── Step 3: OAuth authorization flow ─────────────────────────────────
@@ -1247,6 +1277,22 @@ def cmd_refresh_google_token(args: argparse.Namespace) -> None:
         console.print(f"[red]✗ Stored client/scopes incomplete for {email}.[/red] Re-run [bold]just setup-google[/bold].")
         sys.exit(1)
 
+    # Optionally upgrade/replace the scope set during this re-consent. Adding
+    # scopes requires re-granting consent, so doing it here mints a token that
+    # already carries the new scopes.
+    new_level = getattr(args, "scope_level", None)
+    if new_level:
+        new_scopes = _scopes_for_level(new_level)
+        if not new_scopes:
+            valid = ", ".join(o["level"] for o in _google_scope_options().values())
+            console.print(f"[red]✗ Unknown scope level: {new_level}[/red]  Valid: {valid}")
+            sys.exit(1)
+        if new_level != creds.get("scope_level"):
+            console.print(
+                f"[yellow]Changing access level: {creds.get('scope_level', 'unknown')} → {new_level}[/yellow]"
+            )
+        scopes = new_scopes
+
     console.print(
         Panel(
             f"[bold]Re-authorize {email}[/bold]\n\n"
@@ -1263,6 +1309,9 @@ def cmd_refresh_google_token(args: argparse.Namespace) -> None:
     console.print("[green]✓ New refresh token obtained[/green]")
 
     creds["refresh_token"] = refresh_token
+    if new_level:
+        creds["scopes"] = scopes
+        creds["scope_level"] = new_level
     accounts[email] = creds
     store["accounts"] = accounts
     _save_google_store(sm, store)
@@ -1626,6 +1675,13 @@ def build_parser() -> argparse.ArgumentParser:
         "email",
         nargs="?",
         help="Account email to re-authorize (default: the configured default account)",
+    )
+    p_refresh.add_argument(
+        "--scope-level",
+        dest="scope_level",
+        choices=["readonly", "full", "docs-write"],
+        help="Upgrade/replace the account's access level during this re-consent "
+        "(e.g. docs-write to let OpenClaw create/edit Google Docs)",
     )
     p_refresh.add_argument(
         "--no-deploy",

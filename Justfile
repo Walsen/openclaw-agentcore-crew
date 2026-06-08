@@ -101,10 +101,17 @@ google-default email:
     {{_cli}} setup-google --set-default {{email}}
 
 # Re-mint an expired/revoked refresh token for a Google account, then redeploy.
-# Usage: just refresh-google-token            (default account)
+# Usage: just refresh-google-token                         (default account)
 #        just refresh-google-token you@gmail.com
-refresh-google-token email="":
-    {{_cli}} refresh-google-token {{email}}
+#        just refresh-google-token you@gmail.com docs-write (also upgrade scopes)
+refresh-google-token email="" level="":
+    {{_cli}} refresh-google-token {{email}} {{ if level != "" { "--scope-level " + level } else { "" } }}
+
+# Enable Google Docs writing for an account (re-consent + redeploy).
+# Usage: just google-enable-docs-write you@gmail.com
+google-enable-docs-write email="":
+    {{_cli}} refresh-google-token {{email}} --scope-level docs-write
+
 
 # Tail the AgentCore runtime logs filtered for gog / Google Workspace init.
 # Use this after a deploy to confirm credentials loaded (look for `auth doctor`).
