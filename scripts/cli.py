@@ -174,7 +174,12 @@ def cmd_deploy(args: argparse.Namespace) -> None:
     region = config["region"]
     prefix = config.get("stack_prefix", "OpenClaw")
     phase = args.phase  # None = all
-    use_local = getattr(args, "local", False)
+    # Default to building the pinned local image (openclaw/Dockerfile). Pulling
+    # ffactory/openclaw:latest from Docker Hub is opt-in via --dockerhub, because
+    # the published image can be a newer/older openclaw than the one we pin and
+    # would silently replace the running build (e.g. revert the Bedrock fix).
+    use_dockerhub = getattr(args, "dockerhub", False)
+    use_local = not use_dockerhub
 
     console.print(
         Panel(
@@ -1237,6 +1242,99 @@ def cmd_setup_google(args: argparse.Namespace) -> None:
     )
 
 
+def _google_env_vars(session: boto3.Session, region: str, account: str) -> dict:
+    """Build the GOG_* container env vars from the openclaw/google-oauth secret.
+
+    Returns {} if no accounts are configured. Generates+persists a keyring
+    password on first use. Shared so credential re-injection and full deploys
+    produce identical env.
+    """
+    env: dict = {}
+    arn = f"arn:aws:secretsmanager:{region}:{account}:secret:openclaw/google-oauth"
+    sm = session.client("secretsmanager")
+    try:
+        raw = sm.get_secret_value(SecretId="openclaw/google-oauth")["SecretString"]
+        store = json.loads(raw) if raw else {}
+    except sm.exceptions.ResourceNotFoundException:
+        log.info("Google OAuth secret not yet created — run `just setup-google`")
+        return env
+    except json.JSONDecodeError:
+        log.info("Google OAuth secret is empty — run `just setup-google`")
+        return env
+
+    accounts = store.get("accounts", {})
+    if not accounts and store.get("refresh_token"):  # back-compat single-account
+        accounts = {store.get("account", ""): store}
+    if not accounts:
+        log.info("Google OAuth secret has no accounts — run `just setup-google`")
+        return env
+
+    env["GOG_CREDENTIALS_SECRET_ARN"] = arn
+    env["GOG_ACCOUNTS"] = ",".join(accounts.keys())
+    env["GOG_DEFAULT_ACCOUNT"] = store.get("default_account", next(iter(accounts)))
+    keyring_password = store.get("keyring_password", "")
+    if not keyring_password:
+        import secrets as _secrets
+
+        keyring_password = _secrets.token_urlsafe(32)
+        store["keyring_password"] = keyring_password
+        sm.put_secret_value(SecretId="openclaw/google-oauth", SecretString=json.dumps(store, indent=2))
+        log.info("Generated and stored a new gog keyring password in the secret")
+    env["GOG_KEYRING_BACKEND"] = "file"
+    env["GOG_KEYRING_PASSWORD"] = keyring_password
+    for email, creds in accounts.items():
+        safe = email.upper().replace("@", "_AT_").replace(".", "_")
+        env[f"GOG_ACCOUNT_{safe}_CLIENT_ID"] = creds.get("client_id", "")
+        env[f"GOG_ACCOUNT_{safe}_CLIENT_SECRET"] = creds.get("client_secret", "")
+        env[f"GOG_ACCOUNT_{safe}_REFRESH_TOKEN"] = creds.get("refresh_token", "")
+        env[f"GOG_ACCOUNT_{safe}_SCOPES"] = ",".join(creds.get("scopes", []))
+        env[f"GOG_ACCOUNT_{safe}_LABEL"] = creds.get("label", email)
+    log.info("Google OAuth: injecting %d account(s): %s", len(accounts), ", ".join(accounts.keys()))
+    return env
+
+
+def _reinject_google_env(session: boto3.Session, config: dict) -> None:
+    """Update ONLY the Google env vars on the existing runtime, preserving the
+    current container image and all other config.
+
+    Used after a credential/scope change (e.g. refresh-google-token) so we never
+    rebuild or re-pull the image. A full `deploy --phase 2` would re-pull the
+    Docker Hub image and could revert a pinned local build (the openclaw version
+    pin), silently re-breaking the model — this read-modify-write avoids that.
+    Stale GOG_* keys (accounts removed from the secret) are pruned.
+    """
+    region = config["region"]
+    runtime_id = config.get("runtime_id", "")
+    if not runtime_id or runtime_id in ("", "null", "REPLACE_WITH_RUNTIME_ID"):
+        console.print("[yellow]No runtime_id in cdk.json — run a full deploy first.[/yellow]")
+        return
+    account = session.client("sts").get_caller_identity()["Account"]
+    ac = session.client("bedrock-agentcore-control", region_name=region)
+    cur = ac.get_agent_runtime(agentRuntimeId=runtime_id)
+
+    env = {k: v for k, v in cur.get("environmentVariables", {}).items() if not k.startswith("GOG_")}
+    env.update(_google_env_vars(session, region, account))
+
+    img = cur["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"]
+    kwargs = dict(
+        agentRuntimeId=runtime_id,
+        agentRuntimeArtifact={"containerConfiguration": {"containerUri": img}},
+        roleArn=cur["roleArn"],
+        networkConfiguration=cur["networkConfiguration"],
+        environmentVariables=env,
+    )
+    if "lifecycleConfiguration" in cur:
+        kwargs["lifecycleConfiguration"] = cur["lifecycleConfiguration"]
+    if "protocolConfiguration" in cur:
+        kwargs["protocolConfiguration"] = cur["protocolConfiguration"]
+    resp = ac.update_agent_runtime(**kwargs)
+    digest = img.split("@")[-1][:19] if "@" in img else img.split("/")[-1]
+    console.print(
+        f"[green]✓ Re-injected Google credentials (runtime v{resp.get('agentRuntimeVersion')}, "
+        f"image preserved: {digest}…)[/green]"
+    )
+
+
 def cmd_refresh_google_token(args: argparse.Namespace) -> None:
     """Re-mint the OAuth refresh token for an already-configured Google account.
 
@@ -1321,10 +1419,10 @@ def cmd_refresh_google_token(args: argparse.Namespace) -> None:
         console.print("\nSkipped redeploy (--no-deploy). Run [bold]just deploy-phase2[/bold] to apply.")
         return
 
-    console.print("\n[cyan]Re-injecting credentials into the AgentCore runtime…[/cyan]")
-    # _deploy_phase2 reads the secret and updates the runtime env vars.
-    deploy_args = argparse.Namespace(phase="2", local=False)
-    cmd_deploy(deploy_args)
+    console.print("\n[cyan]Re-injecting credentials into the AgentCore runtime (image preserved)…[/cyan]")
+    # Env-only update — must NOT re-pull/rebuild the image (a full Phase 2 deploy
+    # would pull Docker Hub and could revert the pinned openclaw build).
+    _reinject_google_env(session, config)
 
 
 # ── User Management ───────────────────────────────────────────────────────
@@ -1623,7 +1721,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_deploy.add_argument(
         "--local",
         action="store_true",
-        help="Phase 2: build image from local openclaw/ directory instead of pulling from Docker Hub",
+        help="Phase 2: build image from local openclaw/ directory (this is now the default)",
+    )
+    p_deploy.add_argument(
+        "--dockerhub",
+        action="store_true",
+        help="Phase 2: pull ffactory/openclaw:latest from Docker Hub instead of building locally "
+        "(may replace the pinned build — use with care)",
     )
 
     # build-image — build and push the openclaw image without full Phase 2 deploy

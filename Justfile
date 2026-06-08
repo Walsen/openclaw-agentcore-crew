@@ -43,13 +43,18 @@ deploy:
 deploy-phase1:
     {{_cli}} deploy --phase 1
 
-# Deploy Phase 2 only — pulls ffactory/openclaw:latest from Docker Hub
+# Deploy Phase 2 only — builds the pinned local openclaw/ image (default)
 deploy-phase2:
     {{_cli}} deploy --phase 2
 
-# Deploy Phase 2 using local openclaw/ source (for development/testing)
+# Deploy Phase 2 using local openclaw/ source (explicit; same as default)
 deploy-phase2-local:
     {{_cli}} deploy --phase 2 --local
+
+# Deploy Phase 2 by pulling ffactory/openclaw:latest from Docker Hub.
+# WARNING: may replace the pinned build (e.g. revert the openclaw version pin).
+deploy-phase2-dockerhub:
+    {{_cli}} deploy --phase 2 --dockerhub
 
 # Deploy Phase 3 only (Router, Cron, Token Monitoring)
 deploy-phase3:
