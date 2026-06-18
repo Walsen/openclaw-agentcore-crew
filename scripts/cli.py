@@ -1372,7 +1372,9 @@ def cmd_refresh_google_token(args: argparse.Namespace) -> None:
     client_secret = creds.get("client_secret", "")
     scopes = creds.get("scopes", [])
     if not client_id or not client_secret or not scopes:
-        console.print(f"[red]✗ Stored client/scopes incomplete for {email}.[/red] Re-run [bold]just setup-google[/bold].")
+        console.print(
+            f"[red]✗ Stored client/scopes incomplete for {email}.[/red] Re-run [bold]just setup-google[/bold]."
+        )
         sys.exit(1)
 
     # Optionally upgrade/replace the scope set during this re-consent. Adding
@@ -1648,8 +1650,7 @@ def cmd_gog_logs(args: argparse.Namespace) -> None:
     runtime_id = config.get("runtime_id", "")
     if not runtime_id or runtime_id in ("", "null", "REPLACE_WITH_RUNTIME_ID"):
         console.print(
-            "[red]✗ No runtime_id in config.[/red] Deploy the runtime first "
-            "([bold]just deploy-phase2[/bold])."
+            "[red]✗ No runtime_id in config.[/red] Deploy the runtime first ([bold]just deploy-phase2[/bold])."
         )
         sys.exit(1)
 
@@ -1661,11 +1662,18 @@ def cmd_gog_logs(args: argparse.Namespace) -> None:
     filter_pattern = '?gog ?gog_init ?GOG ?"Google Workspace" ?"auth doctor" ?keyring'
 
     cmd = [
-        "aws", "logs", "tail", log_group,
-        "--region", region,
-        "--since", getattr(args, "since", None) or "30m",
-        "--format", "short",
-        "--filter-pattern", filter_pattern,
+        "aws",
+        "logs",
+        "tail",
+        log_group,
+        "--region",
+        region,
+        "--since",
+        getattr(args, "since", None) or "30m",
+        "--format",
+        "short",
+        "--filter-pattern",
+        filter_pattern,
     ]
     if getattr(args, "follow", True):
         cmd.append("--follow")

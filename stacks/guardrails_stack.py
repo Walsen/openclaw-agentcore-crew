@@ -53,10 +53,7 @@ class GuardrailsStack(cdk.Stack):
             {"type": "PROMPT_ATTACK", "inputStrength": filter_level, "outputStrength": "NONE"},
         ]
 
-        pii_entities = [
-            {"type": e, "action": pii_action}
-            for e in pii_entity_types
-        ]
+        pii_entities = [{"type": e, "action": pii_action} for e in pii_entity_types]
 
         self.guardrail = bedrock.CfnGuardrail(
             self,
