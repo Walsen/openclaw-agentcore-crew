@@ -242,6 +242,26 @@ def _register_user(channel: str, channel_user_id: str, display_name: str) -> dic
 # ── AgentCore invocation ──────────────────────────────────────────────────
 
 
+def _send_ack(channel: str, channel_user_id: str, body: dict) -> None:
+    """Best-effort 'working on it' nudge for long-running turns.
+
+    Sent only by the delay timer in _invoke_and_reply, so it appears just for
+    tasks that take longer than the threshold (e.g. large inbox scans). Failures
+    are swallowed — the ack must never affect the real reply.
+    """
+    msg = "⏳ Working on it…"
+    try:
+        if channel == "telegram":
+            _reply_telegram(channel_user_id, msg)
+        elif channel == "slack":
+            _reply_slack(channel_user_id, msg)
+        elif channel == "whatsapp":
+            _reply_whatsapp(channel_user_id, msg)
+        # Discord uses single-use interaction tokens — skip to avoid consuming it.
+    except Exception as e:
+        logger.warning("ack send failed (%s): %s", channel, e)
+
+
 def _invoke_and_reply(tenant_id: str, message: str, channel: str, channel_user_id: str, body: dict) -> None:
     """Run in a background thread — invoke AgentCore then send reply.
 
@@ -249,7 +269,18 @@ def _invoke_and_reply(tenant_id: str, message: str, channel: str, channel_user_i
     This thread continues running and completes before Lambda freezes.
     Lambda stays alive until all non-daemon threads finish.
     """
-    response_text = _invoke_agentcore(tenant_id, message)
+    import threading
+
+    # Acknowledge only if the turn runs long, so the user isn't left in silence
+    # on multi-minute tasks (big inbox scans, multi-step Workspace actions). The
+    # timer is cancelled if the real response returns first — fast replies stay clean.
+    ack_timer = threading.Timer(7.0, _send_ack, args=(channel, channel_user_id, body))
+    ack_timer.daemon = True
+    ack_timer.start()
+    try:
+        response_text = _invoke_agentcore(tenant_id, message)
+    finally:
+        ack_timer.cancel()
 
     if channel == "telegram":
         _reply_telegram(channel_user_id, response_text)
