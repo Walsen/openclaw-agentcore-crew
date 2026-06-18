@@ -1,0 +1,102 @@
+name: CDK Deploy (on demand)
+
+# On-demand CDK deploys from GitHub, keyless via OIDC.
+#
+# - Pull requests touching infra → `cdk diff` only (read-only preview, never deploys).
+# - Manual "Run workflow" (workflow_dispatch) → `cdk deploy <stack>` for the chosen
+#   stack. NOTHING deploys automatically; a human must trigger it.
+#
+# Auth: GitHub OIDC -> IAM role OpenClawGitHubCDKDeploy, which is only allowed to
+# assume the CDK bootstrap roles (cdk-hnb659fds-*). The bootstrap roles do the
+# actual CloudFormation work, so this CI identity holds no standing admin.
+#
+# Required repo variables (Settings -> Secrets and variables -> Actions -> Variables):
+#   AWS_CDK_ROLE_ARN   arn:aws:iam::862307432587:role/OpenClawGitHubCDKDeploy
+#   AWS_REGION         us-east-1
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "stacks/**"
+      - "lambda/**"
+      - "app.py"
+      - "cdk.json"
+      - "requirements.txt"
+      - ".github/workflows/cdk-deploy.yml"
+  workflow_dispatch:
+    inputs:
+      stack:
+        description: "Stack to deploy (on demand)"
+        type: choice
+        default: OpenClawRouter
+        options:
+          - OpenClawRouter
+          - OpenClawCron
+          - OpenClawTokenMonitoring
+          - OpenClawAgentCore
+          - OpenClawObservability
+          - OpenClawGuardrails
+          - OpenClawSecurity
+          - OpenClawVpc
+
+permissions:
+  id-token: write # required for OIDC
+  contents: read
+
+concurrency:
+  group: cdk-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  JSII_SILENCE_WARNING_UNTESTED_NODE_VERSION: "1"
+
+jobs:
+  diff:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          npm install -g aws-cdk@latest
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CDK_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: cdk diff (all stacks — read-only)
+        run: cdk diff --all
+
+  deploy:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # To require a manual approval click before each deploy, create a GitHub
+    # Environment named "production" with a required reviewer and uncomment:
+    # environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          npm install -g aws-cdk@latest
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CDK_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: cdk deploy ${{ inputs.stack }}
+        run: cdk deploy "${{ inputs.stack }}" --require-approval never
