@@ -28,6 +28,16 @@ class GuardrailsStack(cdk.Stack):
 
         filter_level = self.node.try_get_context("guardrails_content_filter_level") or "HIGH"
         pii_action = self.node.try_get_context("guardrails_pii_action") or "ANONYMIZE"
+        # PII entities to redact. Configurable via cdk.json context
+        # "guardrails_pii_entities" so enterprise (multi-tenant) deployments can
+        # mask EMAIL/NAME/PHONE while a personal-workspace deployment leaves them
+        # visible (otherwise the user's own Gmail/Calendar/Contacts results come
+        # back redacted). Defaults to only genuinely sensitive identifiers.
+        pii_entity_types = self.node.try_get_context("guardrails_pii_entities") or [
+            "US_SOCIAL_SECURITY_NUMBER",
+            "CREDIT_DEBIT_CARD_NUMBER",
+            "IP_ADDRESS",
+        ]
 
         content_filters = [
             {"type": t, "inputStrength": filter_level, "outputStrength": filter_level}
@@ -43,17 +53,7 @@ class GuardrailsStack(cdk.Stack):
             {"type": "PROMPT_ATTACK", "inputStrength": filter_level, "outputStrength": "NONE"},
         ]
 
-        pii_entities = [
-            {"type": e, "action": pii_action}
-            for e in [
-                "EMAIL",
-                "PHONE",
-                "NAME",
-                "US_SOCIAL_SECURITY_NUMBER",
-                "CREDIT_DEBIT_CARD_NUMBER",
-                "IP_ADDRESS",
-            ]
-        ]
+        pii_entities = [{"type": e, "action": pii_action} for e in pii_entity_types]
 
         self.guardrail = bedrock.CfnGuardrail(
             self,

@@ -174,7 +174,12 @@ def cmd_deploy(args: argparse.Namespace) -> None:
     region = config["region"]
     prefix = config.get("stack_prefix", "OpenClaw")
     phase = args.phase  # None = all
-    use_local = getattr(args, "local", False)
+    # Default to building the pinned local image (openclaw/Dockerfile). Pulling
+    # ffactory/openclaw:latest from Docker Hub is opt-in via --dockerhub, because
+    # the published image can be a newer/older openclaw than the one we pin and
+    # would silently replace the running build (e.g. revert the Bedrock fix).
+    use_dockerhub = getattr(args, "dockerhub", False)
+    use_local = not use_dockerhub
 
     console.print(
         Panel(
@@ -328,6 +333,23 @@ def _deploy_phase2(
             agentcore_env["GOG_CREDENTIALS_SECRET_ARN"] = google_secret_arn
             agentcore_env["GOG_ACCOUNTS"] = ",".join(accounts.keys())
             agentcore_env["GOG_DEFAULT_ACCOUNT"] = google_store.get("default_account", next(iter(accounts)))
+            # gogcli stores the refresh token in a keyring. In the headless
+            # AgentCore container there is no OS keyring, so the runtime uses the
+            # encrypted FILE backend, which needs a password. Reuse a stable
+            # password stored in the secret, generating one on first deploy.
+            keyring_password = google_store.get("keyring_password", "")
+            if not keyring_password:
+                import secrets as _secrets
+
+                keyring_password = _secrets.token_urlsafe(32)
+                google_store["keyring_password"] = keyring_password
+                sm.put_secret_value(
+                    SecretId="openclaw/google-oauth",
+                    SecretString=json.dumps(google_store, indent=2),
+                )
+                log.info("Generated and stored a new gog keyring password in the secret")
+            agentcore_env["GOG_KEYRING_BACKEND"] = "file"
+            agentcore_env["GOG_KEYRING_PASSWORD"] = keyring_password
             for email, creds in accounts.items():
                 safe = email.upper().replace("@", "_AT_").replace(".", "_")
                 agentcore_env[f"GOG_ACCOUNT_{safe}_CLIENT_ID"] = creds.get("client_id", "")
@@ -871,6 +893,7 @@ def _setup_discord(sm, api_url, region):
 def _google_scope_options() -> dict:
     return {
         "1": {
+            "level": "readonly",
             "label": "Read-only (safe default) — read Gmail, Calendar, Drive; cannot send or modify",
             "scopes": [
                 "https://www.googleapis.com/auth/gmail.readonly",
@@ -882,6 +905,7 @@ def _google_scope_options() -> dict:
             ],
         },
         "2": {
+            "level": "full",
             "label": "Full access — read + send email, create/edit calendar events, edit Drive files",
             "scopes": [
                 "https://www.googleapis.com/auth/gmail.modify",
@@ -893,7 +917,35 @@ def _google_scope_options() -> dict:
                 "https://www.googleapis.com/auth/contacts",
             ],
         },
+        "3": {
+            "level": "docs-write",
+            "label": (
+                "Read all + write Docs (create/edit Google Docs; manage app-created Drive files). "
+                "Cannot send email or touch pre-existing Drive files. No restricted-scope upgrade vs read-only."
+            ),
+            "scopes": [
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/calendar.readonly",
+                # Read any existing Drive file...
+                "https://www.googleapis.com/auth/drive.readonly",
+                # ...but write only files OpenClaw itself creates (least privilege,
+                # non-restricted — avoids full `drive` and its CASA burden).
+                "https://www.googleapis.com/auth/drive.file",
+                "https://www.googleapis.com/auth/spreadsheets.readonly",
+                # Read + write Google Docs content.
+                "https://www.googleapis.com/auth/documents",
+                "https://www.googleapis.com/auth/contacts.readonly",
+            ],
+        },
     }
+
+
+def _scopes_for_level(level: str) -> list[str] | None:
+    """Return the scope list for a named level (readonly|full|docs-write)."""
+    for opt in _google_scope_options().values():
+        if opt["level"] == level:
+            return opt["scopes"]
+    return None
 
 
 def _run_oauth_flow(client_id: str, client_secret: str, scopes: list[str], account_hint: str) -> str:
@@ -1120,9 +1172,9 @@ def cmd_setup_google(args: argparse.Namespace) -> None:
     scope_opts = _google_scope_options()
     for key, opt in scope_opts.items():
         console.print(f"  [bold]{key}[/bold]. {opt['label']}")
-    scope_choice = Prompt.ask("Choose scope level", choices=["1", "2"], default="1")
+    scope_choice = Prompt.ask("Choose scope level", choices=list(scope_opts.keys()), default="1")
     chosen_scopes = scope_opts[scope_choice]["scopes"]
-    scope_level = "readonly" if scope_choice == "1" else "full"
+    scope_level = scope_opts[scope_choice]["level"]
     console.print(f"[green]✓ Using {scope_level} access for {google_account}[/green]")
 
     # ── Step 3: OAuth authorization flow ─────────────────────────────────
@@ -1188,6 +1240,191 @@ def cmd_setup_google(args: argparse.Namespace) -> None:
             border_style="green",
         )
     )
+
+
+def _google_env_vars(session: boto3.Session, region: str, account: str) -> dict:
+    """Build the GOG_* container env vars from the openclaw/google-oauth secret.
+
+    Returns {} if no accounts are configured. Generates+persists a keyring
+    password on first use. Shared so credential re-injection and full deploys
+    produce identical env.
+    """
+    env: dict = {}
+    arn = f"arn:aws:secretsmanager:{region}:{account}:secret:openclaw/google-oauth"
+    sm = session.client("secretsmanager")
+    try:
+        raw = sm.get_secret_value(SecretId="openclaw/google-oauth")["SecretString"]
+        store = json.loads(raw) if raw else {}
+    except sm.exceptions.ResourceNotFoundException:
+        log.info("Google OAuth secret not yet created — run `just setup-google`")
+        return env
+    except json.JSONDecodeError:
+        log.info("Google OAuth secret is empty — run `just setup-google`")
+        return env
+
+    accounts = store.get("accounts", {})
+    if not accounts and store.get("refresh_token"):  # back-compat single-account
+        accounts = {store.get("account", ""): store}
+    if not accounts:
+        log.info("Google OAuth secret has no accounts — run `just setup-google`")
+        return env
+
+    env["GOG_CREDENTIALS_SECRET_ARN"] = arn
+    env["GOG_ACCOUNTS"] = ",".join(accounts.keys())
+    env["GOG_DEFAULT_ACCOUNT"] = store.get("default_account", next(iter(accounts)))
+    keyring_password = store.get("keyring_password", "")
+    if not keyring_password:
+        import secrets as _secrets
+
+        keyring_password = _secrets.token_urlsafe(32)
+        store["keyring_password"] = keyring_password
+        sm.put_secret_value(SecretId="openclaw/google-oauth", SecretString=json.dumps(store, indent=2))
+        log.info("Generated and stored a new gog keyring password in the secret")
+    env["GOG_KEYRING_BACKEND"] = "file"
+    env["GOG_KEYRING_PASSWORD"] = keyring_password
+    for email, creds in accounts.items():
+        safe = email.upper().replace("@", "_AT_").replace(".", "_")
+        env[f"GOG_ACCOUNT_{safe}_CLIENT_ID"] = creds.get("client_id", "")
+        env[f"GOG_ACCOUNT_{safe}_CLIENT_SECRET"] = creds.get("client_secret", "")
+        env[f"GOG_ACCOUNT_{safe}_REFRESH_TOKEN"] = creds.get("refresh_token", "")
+        env[f"GOG_ACCOUNT_{safe}_SCOPES"] = ",".join(creds.get("scopes", []))
+        env[f"GOG_ACCOUNT_{safe}_LABEL"] = creds.get("label", email)
+    log.info("Google OAuth: injecting %d account(s): %s", len(accounts), ", ".join(accounts.keys()))
+    return env
+
+
+def _reinject_google_env(session: boto3.Session, config: dict) -> None:
+    """Update ONLY the Google env vars on the existing runtime, preserving the
+    current container image and all other config.
+
+    Used after a credential/scope change (e.g. refresh-google-token) so we never
+    rebuild or re-pull the image. A full `deploy --phase 2` would re-pull the
+    Docker Hub image and could revert a pinned local build (the openclaw version
+    pin), silently re-breaking the model — this read-modify-write avoids that.
+    Stale GOG_* keys (accounts removed from the secret) are pruned.
+    """
+    region = config["region"]
+    runtime_id = config.get("runtime_id", "")
+    if not runtime_id or runtime_id in ("", "null", "REPLACE_WITH_RUNTIME_ID"):
+        console.print("[yellow]No runtime_id in cdk.json — run a full deploy first.[/yellow]")
+        return
+    account = session.client("sts").get_caller_identity()["Account"]
+    ac = session.client("bedrock-agentcore-control", region_name=region)
+    cur = ac.get_agent_runtime(agentRuntimeId=runtime_id)
+
+    env = {k: v for k, v in cur.get("environmentVariables", {}).items() if not k.startswith("GOG_")}
+    env.update(_google_env_vars(session, region, account))
+
+    img = cur["agentRuntimeArtifact"]["containerConfiguration"]["containerUri"]
+    kwargs = dict(
+        agentRuntimeId=runtime_id,
+        agentRuntimeArtifact={"containerConfiguration": {"containerUri": img}},
+        roleArn=cur["roleArn"],
+        networkConfiguration=cur["networkConfiguration"],
+        environmentVariables=env,
+    )
+    if "lifecycleConfiguration" in cur:
+        kwargs["lifecycleConfiguration"] = cur["lifecycleConfiguration"]
+    if "protocolConfiguration" in cur:
+        kwargs["protocolConfiguration"] = cur["protocolConfiguration"]
+    resp = ac.update_agent_runtime(**kwargs)
+    digest = img.split("@")[-1][:19] if "@" in img else img.split("/")[-1]
+    console.print(
+        f"[green]✓ Re-injected Google credentials (runtime v{resp.get('agentRuntimeVersion')}, "
+        f"image preserved: {digest}…)[/green]"
+    )
+
+
+def cmd_refresh_google_token(args: argparse.Namespace) -> None:
+    """Re-mint the OAuth refresh token for an already-configured Google account.
+
+    Reuses the account's stored OAuth client and scopes, runs the browser
+    consent flow once, writes the fresh refresh token back to Secrets Manager,
+    and (unless --no-deploy) re-injects it into the AgentCore runtime.
+
+    This is the fix for expired/revoked refresh tokens — common when the Google
+    OAuth consent app is still in "Testing" mode, where tokens expire after 7
+    days. Publish the consent app for long-lived tokens.
+
+    Usage:
+        just refresh-google-token                 # default account
+        just refresh-google-token you@gmail.com   # a specific account
+    """
+    config = load_config()
+    session = get_boto_session(config)
+    verify_credentials(session)
+    sm = session.client("secretsmanager")
+
+    store = _load_google_store(sm)
+    accounts: dict = store.get("accounts", {})
+    if not accounts:
+        console.print("[red]✗ No Google accounts configured.[/red] Run [bold]just setup-google[/bold] first.")
+        sys.exit(1)
+
+    email = getattr(args, "email", None) or store.get("default_account") or next(iter(accounts))
+    if email not in accounts:
+        console.print(f"[red]✗ Account not found: {email}[/red]")
+        console.print(f"  Configured: {', '.join(accounts.keys())}")
+        sys.exit(1)
+
+    creds = accounts[email]
+    client_id = creds.get("client_id", "")
+    client_secret = creds.get("client_secret", "")
+    scopes = creds.get("scopes", [])
+    if not client_id or not client_secret or not scopes:
+        console.print(
+            f"[red]✗ Stored client/scopes incomplete for {email}.[/red] Re-run [bold]just setup-google[/bold]."
+        )
+        sys.exit(1)
+
+    # Optionally upgrade/replace the scope set during this re-consent. Adding
+    # scopes requires re-granting consent, so doing it here mints a token that
+    # already carries the new scopes.
+    new_level = getattr(args, "scope_level", None)
+    if new_level:
+        new_scopes = _scopes_for_level(new_level)
+        if not new_scopes:
+            valid = ", ".join(o["level"] for o in _google_scope_options().values())
+            console.print(f"[red]✗ Unknown scope level: {new_level}[/red]  Valid: {valid}")
+            sys.exit(1)
+        if new_level != creds.get("scope_level"):
+            console.print(
+                f"[yellow]Changing access level: {creds.get('scope_level', 'unknown')} → {new_level}[/yellow]"
+            )
+        scopes = new_scopes
+
+    console.print(
+        Panel(
+            f"[bold]Re-authorize {email}[/bold]\n\n"
+            "A browser window will open. Sign in with this account and grant the\n"
+            "requested permissions to mint a fresh refresh token.\n\n"
+            "[yellow]Tip: if tokens keep expiring after ~7 days, publish your\n"
+            "Google OAuth consent app (move it out of Testing).[/yellow]",
+            border_style="blue",
+        )
+    )
+
+    # Reuse the existing OAuth flow helper — same scopes, same client.
+    refresh_token = _run_oauth_flow(client_id, client_secret, scopes, email)
+    console.print("[green]✓ New refresh token obtained[/green]")
+
+    creds["refresh_token"] = refresh_token
+    if new_level:
+        creds["scopes"] = scopes
+        creds["scope_level"] = new_level
+    accounts[email] = creds
+    store["accounts"] = accounts
+    _save_google_store(sm, store)
+    console.print("[green]✓ Updated openclaw/google-oauth in Secrets Manager[/green]")
+
+    if getattr(args, "no_deploy", False):
+        console.print("\nSkipped redeploy (--no-deploy). Run [bold]just deploy-phase2[/bold] to apply.")
+        return
+
+    console.print("\n[cyan]Re-injecting credentials into the AgentCore runtime (image preserved)…[/cyan]")
+    # Env-only update — must NOT re-pull/rebuild the image (a full Phase 2 deploy
+    # would pull Docker Hub and could revert the pinned openclaw build).
+    _reinject_google_env(session, config)
 
 
 # ── User Management ───────────────────────────────────────────────────────
@@ -1394,6 +1631,60 @@ def cmd_logs(args: argparse.Namespace) -> None:
     subprocess.run(cmd, env=env)
 
 
+def cmd_gog_logs(args: argparse.Namespace) -> None:
+    """Tail the AgentCore runtime logs filtered for gog / Google Workspace init.
+
+    Surfaces the entrypoint's gog initialization and the `gog auth doctor`
+    health check so you can confirm credentials loaded after a deploy.
+
+    Usage:
+        just gog-logs            # recent gog/entrypoint lines, follow
+        just gog-logs --since 1h
+    """
+    config = load_config()
+    session = get_boto_session(config)
+    verify_credentials(session)
+    region = config["region"]
+    profile = config.get("aws_profile", "")
+
+    runtime_id = config.get("runtime_id", "")
+    if not runtime_id or runtime_id in ("", "null", "REPLACE_WITH_RUNTIME_ID"):
+        console.print(
+            "[red]✗ No runtime_id in config.[/red] Deploy the runtime first ([bold]just deploy-phase2[/bold])."
+        )
+        sys.exit(1)
+
+    log_group = f"/aws/bedrock-agentcore/runtimes/{runtime_id}-DEFAULT"
+    log.info("Tailing %s (filtered for gog/entrypoint)", log_group)
+
+    # CloudWatch Logs filter pattern: match the entrypoint's gog markers and
+    # the gog binary's own output. Quoted terms are matched as substrings.
+    filter_pattern = '?gog ?gog_init ?GOG ?"Google Workspace" ?"auth doctor" ?keyring'
+
+    cmd = [
+        "aws",
+        "logs",
+        "tail",
+        log_group,
+        "--region",
+        region,
+        "--since",
+        getattr(args, "since", None) or "30m",
+        "--format",
+        "short",
+        "--filter-pattern",
+        filter_pattern,
+    ]
+    if getattr(args, "follow", True):
+        cmd.append("--follow")
+
+    env = os.environ.copy()
+    env["AWS_DEFAULT_REGION"] = region
+    if profile and profile not in ("None", "REPLACE_WITH_YOUR_SSO_PROFILE_NAME"):
+        env["AWS_PROFILE"] = profile
+    subprocess.run(cmd, env=env)
+
+
 # ── Utilities ─────────────────────────────────────────────────────────────
 
 
@@ -1438,7 +1729,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_deploy.add_argument(
         "--local",
         action="store_true",
-        help="Phase 2: build image from local openclaw/ directory instead of pulling from Docker Hub",
+        help="Phase 2: build image from local openclaw/ directory (this is now the default)",
+    )
+    p_deploy.add_argument(
+        "--dockerhub",
+        action="store_true",
+        help="Phase 2: pull ffactory/openclaw:latest from Docker Hub instead of building locally "
+        "(may replace the pinned build — use with care)",
     )
 
     # build-image — build and push the openclaw image without full Phase 2 deploy
@@ -1481,6 +1778,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Set the default Google account",
     )
 
+    # refresh-google-token — re-mint an expired/revoked refresh token
+    p_refresh = sub.add_parser(
+        "refresh-google-token",
+        help="Re-authorize a configured Google account and store a fresh refresh token",
+    )
+    p_refresh.add_argument(
+        "email",
+        nargs="?",
+        help="Account email to re-authorize (default: the configured default account)",
+    )
+    p_refresh.add_argument(
+        "--scope-level",
+        dest="scope_level",
+        choices=["readonly", "full", "docs-write"],
+        help="Upgrade/replace the account's access level during this re-consent "
+        "(e.g. docs-write to let OpenClaw create/edit Google Docs)",
+    )
+    p_refresh.add_argument(
+        "--no-deploy",
+        action="store_true",
+        help="Update the secret only; do not re-inject into the runtime",
+    )
+
     # users
     p_users = sub.add_parser("users", help="Manage the user allowlist")
     users_sub = p_users.add_subparsers(dest="action", required=True)
@@ -1501,6 +1821,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_logs = sub.add_parser("logs", help="Tail Lambda logs")
     p_logs.add_argument("function", choices=["router", "cron"])
     p_logs.add_argument("--follow", "-f", action="store_true", help="Follow log output")
+
+    # gog-logs — tail AgentCore runtime logs filtered for gog/Google init
+    p_goglogs = sub.add_parser(
+        "gog-logs",
+        help="Tail AgentCore runtime logs filtered for gog / Google Workspace init",
+    )
+    p_goglogs.add_argument(
+        "--since",
+        default="30m",
+        help="How far back to start (e.g. 10m, 1h, 2d). Default: 30m",
+    )
+    p_goglogs.add_argument(
+        "--no-follow",
+        dest="follow",
+        action="store_false",
+        help="Print matching lines and exit instead of following",
+    )
 
     return parser
 
@@ -1583,10 +1920,12 @@ def main():
         "teardown": cmd_teardown,
         "setup": cmd_setup,
         "setup-google": cmd_setup_google,
+        "refresh-google-token": cmd_refresh_google_token,
         "users": cmd_users,
         "outputs": cmd_outputs,
         "status": cmd_status,
         "logs": cmd_logs,
+        "gog-logs": cmd_gog_logs,
     }
     dispatch[args.command](args)
 

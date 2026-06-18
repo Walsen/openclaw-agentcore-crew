@@ -21,13 +21,18 @@
     "stack_prefix": "OpenClaw",
     "docker_image": "ffactory/openclaw:latest",
     "default_model_id": "us.anthropic.claude-sonnet-4-6",
-    "session_idle_timeout": 60,
-    "session_max_lifetime": 120,
+    "session_idle_timeout": 1800,
+    "session_max_lifetime": 28800,
     "workspace_sync_interval_seconds": 300,
     "registration_open": false,
     "enable_guardrails": true,
     "guardrails_content_filter_level": "HIGH",
     "guardrails_pii_action": "ANONYMIZE",
+    "guardrails_pii_entities": [
+      "US_SOCIAL_SECURITY_NUMBER",
+      "CREDIT_DEBIT_CARD_NUMBER",
+      "IP_ADDRESS"
+    ],
     "enable_cloudtrail": false,
     "enable_browser": false,
     "channels": [

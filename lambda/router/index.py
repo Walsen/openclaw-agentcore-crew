@@ -322,8 +322,113 @@ def _invoke_agentcore(tenant_id: str, message: str) -> str:
 # ── Channel reply senders ─────────────────────────────────────────────────
 
 
+TELEGRAM_MAX_LEN = 4096
+
+
+def _md_to_telegram_html(text: str) -> str:
+    """Convert the agent's Markdown into Telegram-compatible HTML.
+
+    Telegram's HTML parse mode supports a small tag set (<b> <i> <u> <s>
+    <code> <pre> <a>) and only requires escaping & < >. That is far more
+    robust than MarkdownV2, which 400s on any unescaped special char — which
+    is why raw Markdown was previously sent as plain text and showed literal
+    ** / ### / | characters. Constructs Telegram can't render (headings,
+    tables) are downgraded: headings -> bold, tables/code fences -> monospace
+    <pre> so columns still line up.
+    """
+    import re
+
+    placeholders: list[str] = []
+
+    def _stash(html: str) -> str:
+        placeholders.append(html)
+        return f"\x00{len(placeholders) - 1}\x00"
+
+    def _esc(s: str) -> str:
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    # 1. Fenced code blocks ```lang\n...``` -> <pre> (kept atomic via placeholder)
+    text = re.sub(
+        r"```[ \t]*[\w+-]*\n?(.*?)```",
+        lambda m: _stash(f"<pre>{_esc(m.group(1))}</pre>"),
+        text,
+        flags=re.DOTALL,
+    )
+
+    # 2. Markdown tables -> monospace <pre> (Telegram has no table support).
+    #    A table = a row containing '|' immediately followed by a |---|---|
+    #    separator row.
+    sep_re = re.compile(r"^\s*\|?\s*:?-{2,}.*$")
+    src_lines = text.split("\n")
+    out_lines: list[str] = []
+    i = 0
+    while i < len(src_lines):
+        line = src_lines[i]
+        nxt = src_lines[i + 1] if i + 1 < len(src_lines) else ""
+        if "|" in line and "|" in nxt and sep_re.match(nxt):
+            tbl = [line, nxt]
+            i += 2
+            while i < len(src_lines) and "|" in src_lines[i]:
+                tbl.append(src_lines[i])
+                i += 1
+            out_lines.append(_stash("<pre>" + _esc("\n".join(tbl)) + "</pre>"))
+        else:
+            out_lines.append(line)
+            i += 1
+    text = "\n".join(out_lines)
+
+    # 3. Inline code `code` -> <code>
+    text = re.sub(r"`([^`\n]+)`", lambda m: _stash(f"<code>{_esc(m.group(1))}</code>"), text)
+
+    # 4. Escape remaining text (placeholders are inert — no & < >)
+    text = _esc(text)
+
+    # 5. Inline Markdown -> HTML
+    text = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", r'<a href="\2">\1</a>', text)  # links
+    text = re.sub(r"(?m)^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*$", r"<b>\1</b>", text)  # headings
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)  # **bold**
+    text = re.sub(r"__(.+?)__", r"<b>\1</b>", text, flags=re.DOTALL)  # __bold__
+    text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text, flags=re.DOTALL)  # ~~strike~~
+    # *italic* — single star, not adjacent to another star or word char (avoids
+    # mangling snake_case, math, etc.)
+    text = re.sub(r"(?<![*\w])\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)", r"<i>\1</i>", text)
+
+    # 6. Restore placeholders
+    text = re.sub(r"\x00(\d+)\x00", lambda m: placeholders[int(m.group(1))], text)
+    return text
+
+
+def _strip_telegram_html(html: str) -> str:
+    """Best-effort plain-text fallback: drop tags and unescape entities."""
+    import re
+
+    text = re.sub(r"<[^>]+>", "", html)
+    return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+
+
+def _split_for_telegram(text: str, limit: int = TELEGRAM_MAX_LEN) -> list[str]:
+    """Split into <=limit chunks, preferring newline boundaries."""
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        if len(current) + len(line) + 1 > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            if len(line) > limit:
+                for j in range(0, len(line), limit):
+                    chunks.append(line[j : j + limit])
+                continue
+        current = line if not current else current + "\n" + line
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def _reply_telegram(channel_user_id: str, text: str) -> None:
-    """Send reply via Telegram Bot API."""
+    """Send reply via Telegram Bot API, rendering Markdown as Telegram HTML."""
     import urllib.request
 
     secret_arn = os.environ.get("TELEGRAM_SECRET_ARN", "")
@@ -331,17 +436,29 @@ def _reply_telegram(channel_user_id: str, text: str) -> None:
         return
     token = _get_secret(secret_arn)
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = json.dumps(
-        {
+
+    def _send(chunk: str, as_html: bool) -> bool:
+        body = {
             "chat_id": channel_user_id,
-            "text": text,
+            "text": chunk,
+            "disable_web_page_preview": True,
         }
-    ).encode()
-    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-    try:
-        urllib.request.urlopen(req, timeout=10)  # nosec B310
-    except Exception as e:
-        logger.error("Telegram reply failed: %s", e)
+        if as_html:
+            body["parse_mode"] = "HTML"
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req, timeout=10)  # nosec B310
+            return True
+        except Exception as e:
+            logger.warning("Telegram send failed (html=%s): %s", as_html, e)
+            return False
+
+    html = _md_to_telegram_html(text)
+    for chunk in _split_for_telegram(html):
+        if not _send(chunk, as_html=True):
+            # Never lose a message to a formatting error — resend as plain text.
+            _send(_strip_telegram_html(chunk), as_html=False)
 
 
 def _reply_slack(channel_user_id: str, text: str) -> None:
