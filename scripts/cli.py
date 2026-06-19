@@ -1079,6 +1079,10 @@ def cmd_setup_google(args: argparse.Namespace) -> None:
         just setup-google --list           # list configured accounts
         just setup-google --remove EMAIL   # remove an account
         just setup-google --set-default EMAIL
+
+    After adding/updating an account the new credentials are re-injected into the
+    running AgentCore runtime (image-preserving, no Docker). Pass --no-deploy to
+    store the secret only.
     """
     config = load_config()
     session = get_boto_session(config)
@@ -1264,6 +1268,18 @@ def cmd_setup_google(args: argparse.Namespace) -> None:
 
     # ── Done ──────────────────────────────────────────────────────────────
     all_emails = list(accounts.keys())
+
+    # Apply to the running runtime immediately — env-only, image-preserving
+    # (same path as refresh-google-token). Avoids `deploy --phase 2`, which would
+    # re-pull/rebuild the Docker image (not possible here, and could revert the
+    # pinned openclaw build). Use --no-deploy to skip and apply later.
+    if getattr(args, "no_deploy", False):
+        applied_msg = "Skipped runtime apply (--no-deploy). Run [bold]just deploy-phase2[/bold] to apply."
+    else:
+        console.print("\n[cyan]Re-injecting credentials into the AgentCore runtime (image preserved)…[/cyan]")
+        _reinject_google_env(session, config)
+        applied_msg = "Credentials injected into the running runtime — no redeploy needed."
+
     console.print(
         Panel(
             f"[bold green]✓ {google_account} connected![/bold green]\n\n"
@@ -1271,10 +1287,10 @@ def cmd_setup_google(args: argparse.Namespace) -> None:
             f"Access:   {scope_level}\n"
             f"Default:  {store['default_account']}\n"
             f"All accounts ({len(all_emails)}): {', '.join(all_emails)}\n\n"
+            f"{applied_msg}\n\n"
             "Next steps:\n"
-            "  1. Run [bold]just deploy-phase2[/bold] to inject credentials into the container\n"
-            "  2. Add more accounts with [bold]just setup-google[/bold]\n"
-            "  3. Then message OpenClaw:\n"
+            "  • Add more accounts with [bold]just setup-google[/bold]\n"
+            "  • Then message OpenClaw:\n"
             '     [italic]"Check my work email for unread messages"[/italic]\n'
             '     [italic]"Find all invoices in my personal Gmail this month"[/italic]\n'
             '     [italic]"What\'s on my work calendar this week?"[/italic]',
@@ -1817,6 +1833,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--set-default",
         metavar="EMAIL",
         help="Set the default Google account",
+    )
+    p_google.add_argument(
+        "--no-deploy",
+        action="store_true",
+        help="Store credentials only; do not re-inject into the runtime",
     )
 
     # refresh-google-token — re-mint an expired/revoked refresh token
