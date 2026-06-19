@@ -31,6 +31,11 @@ Telegram / Slack / WhatsApp / Discord
 - Long sessions — up to 8 hours per session (vs 15 min Lambda limit)
 - Multi-channel — Telegram, Slack, WhatsApp, Discord from one deployment
 
+## Documentation
+
+- **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — canonical deployment guide: build/deploy paths (CDK via GitHub Actions, image publish, runtime env), automated vs. manual steps, runtime-tunable SSM config, image-update workflow, ops.
+- **[docs/NEW-ACCOUNT.md](docs/NEW-ACCOUNT.md)** — step-by-step runbook for standing up OpenClaw in a fresh AWS account (every manual step, in order).
+
 ## Prerequisites
 
 - AWS account with Bedrock model access enabled for `us.anthropic.claude-sonnet-4-6`
@@ -70,18 +75,23 @@ Deploys: VPC, Security (KMS + Secrets), Guardrails, Observability
 
 ### Phase 2 — AgentCore Runtime
 ```bash
-just deploy-phase2
+just deploy-phase2             # default: build the pinned local image (needs Docker)
+just deploy-phase2-dockerhub   # alt: pull ffactory/openclaw:latest from Docker Hub
 ```
-- Pulls `ffactory/openclaw:latest` from Docker Hub
-- Pushes to ECR
-- Creates/updates the AgentCore Runtime
-- Saves `runtime_id` to `cdk.json` automatically
+- Builds (or pulls) the agent image and pushes to ECR
+- Creates/updates the AgentCore Runtime and injects its env (incl. Google `GOG_*`)
+- Writes `runtime_id` to `cdk.json` **and** SSM (`/openclaw/runtime-id`)
+
+> Real CDK deploys (Phase 1/3) run through the GitHub Actions `cdk-deploy.yml`
+> workflow (OIDC) — the devbox `cdk` CLI is intentionally older. See
+> [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ### Phase 3 — Application
 ```bash
 just deploy-phase3
 ```
-Deploys: Router Lambda + API Gateway, Cron Lambda, Token Monitoring
+Deploys: Router Lambda + API Gateway, Cron Lambda, Token Monitoring. Also seeds
+the runtime-tunable SSM config (`/openclaw/config/*`, create-if-absent).
 
 ## Channel Setup
 
@@ -121,12 +131,17 @@ The wizard will:
 3. Open a browser for the one-time authorization flow per account
 4. Store all credentials in a single Secrets Manager secret (`openclaw/google-oauth`)
 5. Save the default account email to `cdk.json`
+6. **Re-inject the credentials into the running runtime automatically** (image-preserving, no Docker, no redeploy). Pass `--no-deploy` to skip and apply later.
 
-Then redeploy Phase 2 to inject the credentials into the container:
+> Adding a second account does not change your default. Address a non-default
+> account by name ("my work email" / the address); "my email" uses the default.
+> Change the default anytime with `just google-default you@work.com` (no re-auth).
 
-```bash
-just deploy-phase2
-```
+**Google Workspace accounts:** for a managed domain (not personal Gmail), add the
+address as a **test user** on the OAuth consent screen if the app is in "Testing"
+mode, and ensure the Workspace admin allows the app (Admin console → Security →
+API controls). Apps left in Testing expire refresh tokens after ~7 days — publish
+the consent app for long-lived tokens.
 
 **Scope options** (choose per account):
 - **Read-only** (recommended to start) — read Gmail, Calendar, Drive; cannot send or delete
@@ -139,7 +154,7 @@ just deploy-phase2
 - *"Search my personal Drive for the Q1 budget spreadsheet"*
 - *"Send a reply from my work account to the last email from Alice"*
 
-**To change scopes or rotate a token**, re-run `just setup-google` with the same email address — it overwrites that account's entry. Then `just deploy-phase2`.
+**To change scopes or rotate a token**, re-run `just setup-google` with the same email address (or `just refresh-google-token you@example.com <scope-level>`) — it overwrites that account's entry and re-injects automatically.
 
 **Secret structure** (`openclaw/google-oauth`):
 
@@ -181,8 +196,30 @@ just remove-user telegram:123456789
 | `registration_open` | `false` | Allow self-registration |
 | `channels` | `["telegram","slack","whatsapp","discord"]` | Enabled channels |
 | `enable_guardrails` | `true` | Bedrock content guardrails |
-| `runtime_id` | — | Set automatically after Phase 2 |
+| `runtime_id` | — | Set automatically after Phase 2 (also published to SSM `/openclaw/runtime-id`) |
 | `google_account` | — | Set automatically by `just setup-google` |
+
+### Runtime-tunable config (SSM, no redeploy)
+
+A few operational knobs live in SSM `/openclaw/config/*` and are read by the
+Lambdas at invocation (~60s cache), so they change **without a redeploy**. Phase 3
+seeds them create-if-absent from the `cdk.json` defaults below.
+
+| Parameter | Source default | Used by |
+|---|---|---|
+| `/openclaw/config/max-users` | `max_users` | Router (registration cap) |
+| `/openclaw/config/registration-open` | `registration_open` | Router (self-registration) |
+| `/openclaw/config/daily-token-budget` | `daily_token_budget` | Token processor |
+| `/openclaw/config/daily-cost-budget-usd` | `daily_cost_budget_usd` | Token processor |
+
+```bash
+# change a value live (effective within ~a minute)
+aws ssm put-parameter --overwrite --type String \
+  --name /openclaw/config/registration-open --value true \
+  --profile walsen --region us-east-1
+```
+
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full deploy paths.
 
 ## Customizing the Agent Identity
 
