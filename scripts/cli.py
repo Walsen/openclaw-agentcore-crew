@@ -197,6 +197,7 @@ def cmd_deploy(args: argparse.Namespace) -> None:
     if phase in (None, "2"):
         _deploy_phase2(config, session, account, region, prefix, use_local=use_local)
     if phase in (None, "3"):
+        _seed_config_ssm(config, session, region)
         _deploy_phase3(config, prefix)
 
 
@@ -452,6 +453,36 @@ def _deploy_phase2(
                 border_style="green",
             )
         )
+
+
+# Runtime-tunable operational config, seeded once into SSM (/openclaw/config/*).
+# Lambdas read these at invocation so operators can change them without a
+# redeploy. Seeded create-if-absent so CDK deploys never reset operator changes.
+_CONFIG_SSM_SEEDS = {
+    "/openclaw/config/max-users": ("max_users", 10),
+    "/openclaw/config/registration-open": ("registration_open", False),
+    "/openclaw/config/daily-token-budget": ("daily_token_budget", 1000000),
+    "/openclaw/config/daily-cost-budget-usd": ("daily_cost_budget_usd", 10),
+}
+
+
+def _seed_config_ssm(config: dict, session: boto3.Session, region: str) -> None:
+    """Create the /openclaw/config/* parameters from cdk.json defaults if absent.
+
+    Uses Overwrite=False so an operator's runtime change is never clobbered by a
+    later deploy. CDK only grants read access to these — it must not manage their
+    values, or `cdk deploy` would reset live tuning.
+    """
+    ssm = session.client("ssm", region_name=region)
+    for param_name, (config_key, fallback) in _CONFIG_SSM_SEEDS.items():
+        value = config.get(config_key, fallback)
+        # registration_open is a bool in cdk.json; store as lowercase string.
+        value_str = str(value).lower() if isinstance(value, bool) else str(value)
+        try:
+            ssm.put_parameter(Name=param_name, Value=value_str, Type="String", Overwrite=False)
+            console.print(f"[green]✓ Seeded {param_name} = {value_str}[/green]")
+        except ssm.exceptions.ParameterAlreadyExists:
+            console.print(f"[dim]• {param_name} already set — leaving operator value[/dim]")
 
 
 def _deploy_phase3(config: dict, prefix: str) -> None:

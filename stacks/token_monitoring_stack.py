@@ -85,6 +85,16 @@ class TokenMonitoringStack(cdk.Stack):
         self.usage_table.grant_read_write_data(self.processor_function)
         router_stack.identity_table.grant_read_data(self.processor_function)
 
+        # Runtime-tunable budgets in SSM (/openclaw/config/*) — read at invocation
+        # so operators can change daily budgets without a redeploy.
+        self.processor_function.add_to_role_policy(
+            iam.PolicyStatement(
+                sid="SsmConfigRead",
+                actions=["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"],
+                resources=[f"arn:aws:ssm:{self.region}:{self.account}:parameter/openclaw/config/*"],
+            )
+        )
+
         # --- Outputs ------------------------------------------------------
         cdk.CfnOutput(self, "UsageTableName", value=self.usage_table.table_name)
         cdk.CfnOutput(self, "ProcessorFunctionArn", value=self.processor_function.function_arn)

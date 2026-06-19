@@ -32,12 +32,16 @@ logger.setLevel(logging.INFO)
 # ── AWS clients (initialized once per Lambda container) ──────────────────
 secrets_client = boto3.client("secretsmanager")
 dynamodb = boto3.resource("dynamodb")
+ssm_client = boto3.client("ssm")
 
 IDENTITY_TABLE = os.environ["IDENTITY_TABLE"]
 RUNTIME_ID = os.environ.get("RUNTIME_ID", "")  # set after Phase 2
 RUNTIME_ARN = os.environ.get("RUNTIME_ARN", "")  # full ARN for invoke_agent_runtime
 STACK_NAME = os.environ.get("STACK_NAME", "OpenClaw")
 CHANNELS = os.environ.get("CHANNELS", "telegram").split(",")
+# Baseline values from deploy-time env vars. The live values are read from SSM
+# (/openclaw/config/*) at invocation via _ssm_config, so operators can tune them
+# without a redeploy; these serve as the fallback when SSM is unavailable.
 MAX_USERS = int(os.environ.get("MAX_USERS", "10"))
 REGISTRATION_OPEN = os.environ.get("REGISTRATION_OPEN", "false") == "true"
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
@@ -69,6 +73,34 @@ def _get_secret(arn: str) -> str:
     resp = secrets_client.get_secret_value(SecretId=arn)
     value = resp["SecretString"]
     _secret_cache[arn] = (value, now)
+    return value
+
+
+# ── Runtime-tunable config (SSM Parameter Store) ──────────────────────────
+# Operators can change these without redeploying; the Lambda re-reads them at
+# invocation, cached briefly per warm container.
+CONFIG_PREFIX = "/openclaw/config"
+CONFIG_TTL = 60  # seconds
+_config_cache: dict[str, tuple[str, float]] = {}
+
+
+def _ssm_config(name: str, default: str) -> str:
+    """Return /openclaw/config/<name> from SSM, cached ~CONFIG_TTL seconds.
+
+    Falls back to `default` (the deploy-time env baseline) if the parameter is
+    missing or SSM errors, so the router never fails on a config read.
+    """
+    now = time.time()
+    cached = _config_cache.get(name)
+    if cached and now - cached[1] < CONFIG_TTL:
+        return cached[0]
+    try:
+        resp = ssm_client.get_parameter(Name=f"{CONFIG_PREFIX}/{name}")
+        value = resp["Parameter"]["Value"]
+    except Exception as e:
+        logger.warning("SSM config read failed for %s: %s — using default", name, e)
+        value = default
+    _config_cache[name] = (value, now)
     return value
 
 
@@ -215,10 +247,11 @@ def _resolve_user(channel: str, channel_user_id: str) -> dict | None:
 
 def _register_user(channel: str, channel_user_id: str, display_name: str) -> dict | None:
     """Register a new user if under capacity."""
+    max_users = int(_ssm_config("max-users", str(MAX_USERS)))
     try:
         resp = identity_table.scan(Select="COUNT")
-        if resp["Count"] >= MAX_USERS:
-            logger.warning("User capacity reached (%d/%d)", resp["Count"], MAX_USERS)
+        if resp["Count"] >= max_users:
+            logger.warning("User capacity reached (%d/%d)", resp["Count"], max_users)
             return None
     except ClientError:
         return None
@@ -650,7 +683,12 @@ def handler(event, context):
         # ── Resolve or register user ──────────────────────────────────────
         user = _resolve_user(channel, channel_user_id)
         if not user:
-            if REGISTRATION_OPEN:
+            registration_open = _ssm_config("registration-open", "true" if REGISTRATION_OPEN else "false").lower() in (
+                "true",
+                "1",
+                "yes",
+            )
+            if registration_open:
                 user = _register_user(channel, channel_user_id, display_name)
             if not user:
                 logger.warning("Unregistered user %s:%s", channel, channel_user_id)
