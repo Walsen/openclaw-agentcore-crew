@@ -13,6 +13,7 @@ Deployment phases:
 import aws_cdk as cdk
 
 from stacks.agentcore_stack import AgentCoreStack
+from stacks.cicd_stack import CicdStack
 from stacks.cron_stack import CronStack
 from stacks.guardrails_stack import GuardrailsStack
 from stacks.observability_stack import ObservabilityStack
@@ -108,5 +109,23 @@ token_monitoring_stack = TokenMonitoringStack(
     env=env,
     description="OpenClaw — DynamoDB token usage, Lambda processor, dashboard",
 )
+
+# ---------------------------------------------------------------------------
+# CI/CD — GitHub OIDC provider + deploy roles (opt-in)
+#
+# Codifies the GitHub Actions deploy identity (previously hand-created IAM).
+# Disabled by default so existing accounts don't clash with the manually
+# created OIDC provider/roles. Enable for a NEW account by setting context
+# `enable_cicd_stack=true` (and `cicd_create_oidc_provider=false` if that
+# account already has a GitHub OIDC provider). See docs/NEW-ACCOUNT.md.
+# ---------------------------------------------------------------------------
+
+if app.node.try_get_context("enable_cicd_stack"):
+    CicdStack(
+        app,
+        f"{prefix}Cicd",
+        env=env,
+        description="OpenClaw — GitHub OIDC provider + keyless CI/CD deploy roles",
+    )
 
 app.synth()
