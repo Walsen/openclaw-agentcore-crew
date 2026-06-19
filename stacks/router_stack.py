@@ -156,6 +156,16 @@ class RouterStack(cdk.Stack):
             )
         )
 
+        # Runtime-tunable config in SSM (/openclaw/config/*) — read at invocation
+        # so operators can change max_users / registration_open without a redeploy.
+        self.router_function.add_to_role_policy(
+            iam.PolicyStatement(
+                sid="SsmConfigRead",
+                actions=["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"],
+                resources=[f"arn:aws:ssm:{self.region}:{self.account}:parameter/openclaw/config/*"],
+            )
+        )
+
         # --- API Gateway HTTP API -----------------------------------------
         self.http_api = apigwv2.CfnApi(
             self,
