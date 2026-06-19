@@ -10,6 +10,8 @@ Deployment phases:
   Phase 3 — Application: AgentCore stack, Router, Cron, Token Monitoring
 """
 
+import os
+
 import aws_cdk as cdk
 
 from stacks.agentcore_stack import AgentCoreStack
@@ -24,8 +26,11 @@ from stacks.vpc_stack import VpcStack
 
 app = cdk.App()
 
-account = app.node.try_get_context("account")
-region = app.node.try_get_context("region") or "us-east-1"
+# Account/region: prefer cdk.json context, else fall back to the ambient deploy
+# credentials (CDK_DEFAULT_ACCOUNT/REGION). New accounts can omit them from
+# cdk.json and they resolve from whichever profile/role is deploying.
+account = app.node.try_get_context("account") or os.environ.get("CDK_DEFAULT_ACCOUNT")
+region = app.node.try_get_context("region") or os.environ.get("CDK_DEFAULT_REGION") or "us-east-1"
 prefix = app.node.try_get_context("stack_prefix") or "OpenClaw"
 
 env = cdk.Environment(account=account, region=region)
@@ -69,12 +74,13 @@ observability_stack = ObservabilityStack(
 # CfnRuntime requires the container image to already be in ECR.  The deploy
 # script handles: pull from Docker Hub → push to ECR → create runtime.
 #
-# After Phase 2 completes, add runtime_id to cdk.json context, then deploy
-# Phase 3.
+# After Phase 2 completes, scripts/cli.py writes the runtime id to SSM
+# (/openclaw/runtime-id); Phase 3 stacks read it from there, so no manual
+# cdk.json edit is needed. An explicit cdk.json "runtime_id" still overrides.
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Phase 3 — Application (depends on Phase 2 runtime_id in cdk.json)
+# Phase 3 — Application (resolves runtime_id from cdk.json context or SSM)
 # ---------------------------------------------------------------------------
 
 agentcore_stack = AgentCoreStack(

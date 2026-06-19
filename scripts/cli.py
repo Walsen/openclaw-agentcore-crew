@@ -388,6 +388,11 @@ def _deploy_phase2(
             },
             environmentVariables=agentcore_env,
         )
+        # Publish the runtime id to SSM so Phase 3 stacks (and new accounts) can
+        # resolve it at deploy time without a committed cdk.json value.
+        session.client("ssm", region_name=region).put_parameter(
+            Name="/openclaw/runtime-id", Value=existing_runtime_id, Type="String", Overwrite=True
+        )
         console.print(
             Panel(
                 f"[bold green]✓ Phase 2 complete![/bold green]\n\n"
@@ -433,11 +438,16 @@ def _deploy_phase2(
 
         # Automatically save runtime_id to cdk.json — no manual step needed
         save_config_value("runtime_id", new_runtime_id)
+        # Also publish to SSM (/openclaw/runtime-id) — the source of truth Phase 3
+        # stacks read, so a committed cdk.json value isn't required per account.
+        session.client("ssm", region_name=region).put_parameter(
+            Name="/openclaw/runtime-id", Value=new_runtime_id, Type="String", Overwrite=True
+        )
         console.print(
             Panel(
                 f"[bold green]✓ Phase 2 complete![/bold green]\n\n"
                 f"Runtime ID: [bold]{new_runtime_id}[/bold]\n"
-                "Saved to cdk.json automatically.\n\n"
+                "Saved to cdk.json + SSM (/openclaw/runtime-id) automatically.\n\n"
                 "Run [bold]just deploy-phase3[/bold] to continue.",
                 border_style="green",
             )

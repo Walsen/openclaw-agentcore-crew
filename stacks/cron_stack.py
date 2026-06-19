@@ -18,10 +18,13 @@ from aws_cdk import (
 from aws_cdk import (
     aws_scheduler as scheduler,
 )
+from aws_cdk import (
+    aws_ssm as ssm,
+)
 from constructs import Construct
 
 from stacks.agentcore_stack import AgentCoreStack
-from stacks.router_stack import RouterStack
+from stacks.router_stack import RUNTIME_ID_PARAM, RouterStack
 
 
 class CronStack(cdk.Stack):
@@ -39,6 +42,11 @@ class CronStack(cdk.Stack):
         prefix = self.node.try_get_context("stack_prefix") or "OpenClaw"
         timeout_s = self.node.try_get_context("cron_lambda_timeout_seconds") or 900
         memory_mb = self.node.try_get_context("cron_lambda_memory_mb") or 256
+
+        # Runtime id: cdk.json context override, else the SSM value Phase 2 writes.
+        runtime_id = self.node.try_get_context("runtime_id")
+        if not runtime_id:
+            runtime_id = ssm.StringParameter.value_for_string_parameter(self, RUNTIME_ID_PARAM)
 
         # --- Cron executor Lambda log group -------------------------------
         cron_log_group = logs.LogGroup(
@@ -63,7 +71,7 @@ class CronStack(cdk.Stack):
             environment={
                 "IDENTITY_TABLE": router_stack.identity_table.table_name,
                 "STACK_NAME": prefix,
-                "RUNTIME_ID": self.node.try_get_context("runtime_id") or "",
+                "RUNTIME_ID": runtime_id,
             },
             log_group=cron_log_group,
         )
