@@ -26,9 +26,16 @@ from aws_cdk import (
 from aws_cdk import (
     aws_logs as logs,
 )
+from aws_cdk import (
+    aws_ssm as ssm,
+)
 from constructs import Construct
 
 from stacks.agentcore_stack import AgentCoreStack
+
+# SSM parameter that Phase 2 (scripts/cli.py) writes with the AgentCore runtime id,
+# so Phase 3 stacks can resolve it at deploy time without a committed cdk.json value.
+RUNTIME_ID_PARAM = "/openclaw/runtime-id"
 
 
 class RouterStack(cdk.Stack):
@@ -71,11 +78,12 @@ class RouterStack(cdk.Stack):
             projection_type=dynamodb.ProjectionType.ALL,
         )
 
-        # runtime_id is populated in cdk.json after Phase 2 completes
-        runtime_id = self.node.try_get_context("runtime_id") or ""
-        runtime_arn = (
-            f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:runtime/{runtime_id}" if runtime_id else ""
-        )
+        # Runtime id: prefer an explicit cdk.json context override; otherwise read
+        # the value Phase 2 writes to SSM (/openclaw/runtime-id), resolved at deploy.
+        runtime_id = self.node.try_get_context("runtime_id")
+        if not runtime_id:
+            runtime_id = ssm.StringParameter.value_for_string_parameter(self, RUNTIME_ID_PARAM)
+        runtime_arn = f"arn:aws:bedrock-agentcore:{self.region}:{self.account}:runtime/{runtime_id}"
 
         # --- Router Lambda log group --------------------------------------
         router_log_group = logs.LogGroup(
