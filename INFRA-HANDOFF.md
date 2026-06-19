@@ -1,5 +1,10 @@
 # OpenClaw Infrastructure Repo — Handoff Document
 
+> **Historical note.** This document describes the original bootstrap from the
+> AWS sample (toolkit + `deploy.sh`) and predates the current `just`/`scripts/cli.py`
+> workflow. It is kept for provenance. For current deployment use
+> **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** and **[docs/NEW-ACCOUNT.md](docs/NEW-ACCOUNT.md)**.
+
 This document contains everything needed to create and deploy the `openclaw-infra` repo in a new session. It is self-contained — no context from the current session is required.
 
 ---
