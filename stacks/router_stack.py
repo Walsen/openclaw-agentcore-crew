@@ -15,6 +15,12 @@ from aws_cdk import (
     aws_apigatewayv2 as apigwv2,
 )
 from aws_cdk import (
+    aws_cloudwatch as cloudwatch,
+)
+from aws_cdk import (
+    aws_cloudwatch_actions as cw_actions,
+)
+from aws_cdk import (
     aws_dynamodb as dynamodb,
 )
 from aws_cdk import (
@@ -24,7 +30,13 @@ from aws_cdk import (
     aws_lambda as lambda_,
 )
 from aws_cdk import (
+    aws_lambda_destinations as lambda_destinations,
+)
+from aws_cdk import (
     aws_logs as logs,
+)
+from aws_cdk import (
+    aws_sqs as sqs,
 )
 from aws_cdk import (
     aws_ssm as ssm,
@@ -32,6 +44,7 @@ from aws_cdk import (
 from constructs import Construct
 
 from stacks.agentcore_stack import AgentCoreStack
+from stacks.observability_stack import ObservabilityStack
 
 # SSM parameter that Phase 2 (scripts/cli.py) writes with the AgentCore runtime id,
 # so Phase 3 stacks can resolve it at deploy time without a committed cdk.json value.
@@ -45,13 +58,16 @@ class RouterStack(cdk.Stack):
         construct_id: str,
         *,
         agentcore_stack: AgentCoreStack,
+        observability_stack: ObservabilityStack | None = None,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
         prefix = self.node.try_get_context("stack_prefix") or "OpenClaw"
         channels = self.node.try_get_context("channels") or ["telegram"]
-        timeout_s = self.node.try_get_context("router_lambda_timeout_seconds") or 60
+        # The webhook half of the router answers in ~100ms; this timeout covers the
+        # async worker half, which runs a full agent turn (server.py allows 300s).
+        timeout_s = self.node.try_get_context("router_lambda_timeout_seconds") or 330
         memory_mb = self.node.try_get_context("router_lambda_memory_mb") or 256
         max_users = self.node.try_get_context("max_users") or 10
         registration_open = self.node.try_get_context("registration_open") or False
@@ -66,6 +82,9 @@ class RouterStack(cdk.Stack):
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
             encryption=dynamodb.TableEncryption.AWS_MANAGED,
             removal_policy=cdk.RemovalPolicy.RETAIN,
+            # The router writes one DEDUPE#webhook item per inbound delivery so
+            # platform redeliveries can be recognised and dropped. TTL reaps them.
+            time_to_live_attribute="expires_at",
             point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(
                 point_in_time_recovery_enabled=True,
             ),
@@ -120,6 +139,81 @@ class RouterStack(cdk.Stack):
             },
             log_group=router_log_group,
         )
+
+        # The router hands slow work to an async invocation of itself, so it needs
+        # permission to invoke itself. The ARN is built from the known function
+        # name rather than function_arn: referencing the construct's own ARN in
+        # its own role policy creates a CloudFormation dependency cycle.
+        self.router_function.add_to_role_policy(
+            iam.PolicyStatement(
+                sid="SelfAsyncInvoke",
+                actions=["lambda:InvokeFunction"],
+                resources=[f"arn:aws:lambda:{self.region}:{self.account}:function:{prefix.lower()}-router"],
+            )
+        )
+
+        # Dead-letter queue for the async worker. Because the reply is delivered by
+        # the worker rather than the webhook response, a worker that dies leaves the
+        # user with no answer and nothing else to notice it — the failed job lands
+        # here instead of vanishing.
+        self.worker_dlq = sqs.Queue(
+            self,
+            "RouterWorkerDlq",
+            queue_name=f"{prefix.lower()}-router-worker-dlq",
+            encryption=sqs.QueueEncryption.SQS_MANAGED,
+            retention_period=cdk.Duration.days(14),
+        )
+
+        # Async invocations get no automatic retries. Lambda's default of 2 would
+        # re-run a non-idempotent agent turn and post duplicate replies — the exact
+        # behaviour this change fixes. Failed jobs go to the DLQ instead.
+        self.router_function.configure_async_invoke(
+            retry_attempts=0,
+            on_failure=lambda_destinations.SqsDestination(self.worker_dlq),
+        )
+
+        # --- Alarms on silent worker failure ------------------------------
+        # "Worker failed" is logged by _handle_worker when an agent turn raises.
+        worker_error_metric = router_log_group.add_metric_filter(
+            "WorkerFailedFilter",
+            filter_pattern=logs.FilterPattern.literal('"Worker failed"'),
+            metric_namespace=f"{prefix}/Router",
+            metric_name="WorkerFailures",
+            metric_value="1",
+        ).metric(statistic="Sum", period=cdk.Duration.minutes(5))
+
+        worker_failure_alarm = cloudwatch.Alarm(
+            self,
+            "WorkerFailureAlarm",
+            alarm_name=f"{prefix}-router-worker-failures",
+            alarm_description="Router async worker raised — the user received no reply.",
+            metric=worker_error_metric,
+            threshold=1,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+
+        dlq_alarm = cloudwatch.Alarm(
+            self,
+            "WorkerDlqAlarm",
+            alarm_name=f"{prefix}-router-worker-dlq",
+            alarm_description="A router worker job was dead-lettered — a message went unanswered.",
+            metric=self.worker_dlq.metric_approximate_number_of_messages_visible(
+                statistic="Maximum", period=cdk.Duration.minutes(5)
+            ),
+            threshold=1,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+
+        if observability_stack is not None:
+            action = cw_actions.SnsAction(observability_stack.alarm_topic)
+            worker_failure_alarm.add_alarm_action(action)
+            dlq_alarm.add_alarm_action(action)
+
+        cdk.CfnOutput(self, "WorkerDlqUrl", value=self.worker_dlq.queue_url)
 
         # Grant Lambda permissions — use explicit ARN-based policies to avoid
         # cross-stack dependency cycles with SecurityStack

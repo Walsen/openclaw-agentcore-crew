@@ -24,10 +24,19 @@ import os
 import time
 
 import boto3
+from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
+
+# Marker on the payload we send to ourselves for the slow half of the work.
+WORKER_MARKER = "__openclaw_worker"
+# Upper bound for a single agent turn. server.py defaults to a 300s turn timeout,
+# so the client read timeout has to be at least that plus a margin.
+AGENT_READ_TIMEOUT = int(os.environ.get("AGENT_READ_TIMEOUT", "320"))
+# How long a processed update stays in the dedupe table.
+DEDUPE_TTL_SECONDS = int(os.environ.get("DEDUPE_TTL_SECONDS", str(6 * 3600)))
 
 # ── AWS clients (initialized once per Lambda container) ──────────────────
 secrets_client = boto3.client("secretsmanager")
@@ -48,8 +57,24 @@ AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 identity_table = dynamodb.Table(IDENTITY_TABLE)
 
-# AgentCore client — bedrock-agentcore service
-agentcore_client = boto3.client("bedrock-agentcore", region_name=AWS_REGION)
+# AgentCore client — bedrock-agentcore service.
+#
+# read_timeout must exceed the longest agent turn: botocore defaults to 60s, which
+# silently truncated long turns (big inbox scans) into "Something went wrong".
+# retries MUST be 0: invoke_agent_runtime is not idempotent, so a botocore retry
+# runs the user's turn a second time and posts a second reply.
+agentcore_client = boto3.client(
+    "bedrock-agentcore",
+    region_name=AWS_REGION,
+    config=BotoConfig(
+        connect_timeout=10,
+        read_timeout=AGENT_READ_TIMEOUT,
+        retries={"max_attempts": 0, "mode": "standard"},
+    ),
+)
+
+# Lambda client used to hand the slow work to an async invocation of ourselves.
+lambda_client = boto3.client("lambda", region_name=AWS_REGION)
 
 # Channel prefix map (must match server.py ch_map)
 CHANNEL_PREFIX = {
@@ -168,10 +193,80 @@ def _verify_discord_signature(body: str, headers: dict) -> bool:
 # ── Message extraction ────────────────────────────────────────────────────
 
 
+def _dedupe_key(channel: str, body: dict) -> str:
+    """Return a stable per-delivery id, or "" when the platform gives us none.
+
+    Every platform redelivers a webhook it believes failed, so the same user
+    message can arrive many times. These ids are what make a retry recognisable.
+    """
+    if channel == "telegram":
+        # update_id is unique per update and repeated verbatim on redelivery.
+        uid = body.get("update_id")
+        return f"tg:{uid}" if uid is not None else ""
+    if channel == "slack":
+        eid = body.get("event_id", "")
+        return f"sl:{eid}" if eid else ""
+    if channel == "whatsapp":
+        entry = (body.get("entry") or [{}])[0]
+        changes = (entry.get("changes") or [{}])[0]
+        messages = (changes.get("value") or {}).get("messages") or [{}]
+        mid = messages[0].get("id", "")
+        return f"wa:{mid}" if mid else ""
+    if channel == "discord":
+        iid = body.get("id", "")
+        return f"dc:{iid}" if iid else ""
+    return ""
+
+
+def _claim_delivery(key: str) -> bool:
+    """Atomically claim a delivery id. False means it was already processed.
+
+    A conditional PutItem is the whole mechanism: the first delivery writes the
+    item, any redelivery fails the condition and gets dropped. Items expire via
+    the table's TTL so this never grows unbounded.
+    """
+    if not key:
+        # No id to key on — process it rather than dropping a real message.
+        return True
+    try:
+        identity_table.put_item(
+            Item={
+                "pk": "DEDUPE#webhook",
+                "sk": key,
+                "claimed_at": int(time.time()),
+                "expires_at": int(time.time()) + DEDUPE_TTL_SECONDS,
+            },
+            ConditionExpression="attribute_not_exists(sk)",
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        # Never drop a message because the dedupe table misbehaved.
+        logger.warning("dedupe claim failed for %s: %s — processing anyway", key, e)
+        return True
+
+
+def _release_delivery(key: str) -> None:
+    """Give up a claim so the platform's redelivery can be processed.
+
+    Without this, a claimed-but-never-dispatched update is lost for good: the
+    claim makes every Telegram retry look like a duplicate and get dropped.
+    """
+    if not key:
+        return
+    try:
+        identity_table.delete_item(Key={"pk": "DEDUPE#webhook", "sk": key})
+    except ClientError as e:
+        logger.warning("dedupe release failed for %s: %s", key, e)
+
+
 def _extract_message(channel: str, body: dict) -> tuple[str, str, str] | None:
     """Return (channel_user_id, display_name, message_text) or None to skip."""
     if channel == "telegram":
-        msg = body.get("message") or body.get("edited_message", {})
+        # Only real messages. An edited_message used to be treated as new input,
+        # so fixing a typo silently triggered another full agent turn.
+        msg = body.get("message") or {}
         if not msg:
             return None
         user = msg.get("from", {})
@@ -605,8 +700,46 @@ def _reply_discord(interaction_token: str, application_id: str, text: str) -> No
 # ── Lambda handler ────────────────────────────────────────────────────────
 
 
+def _dispatch_async(context, job: dict) -> bool:
+    """Hand the slow half of the work to an async invocation of this function."""
+    try:
+        lambda_client.invoke(
+            FunctionName=context.invoked_function_arn,
+            InvocationType="Event",
+            Payload=json.dumps({WORKER_MARKER: True, **job}).encode(),
+        )
+        return True
+    except Exception as e:
+        logger.error("async dispatch failed: %s", e)
+        return False
+
+
+def _handle_worker(event) -> dict:
+    """Async half: run the agent turn and deliver the reply.
+
+    Reached only via _dispatch_async, never from API Gateway, so it is free to
+    take minutes without anything upstream timing out and redelivering.
+    """
+    tenant_id = event.get("tenant_id", "")
+    message = event.get("message", "")
+    channel = event.get("channel", "")
+    channel_user_id = event.get("channel_user_id", "")
+    body = event.get("body") or {}
+    logger.info("Worker start channel=%s tenant=%s msg_len=%d", channel, tenant_id, len(message))
+    try:
+        _invoke_and_reply(tenant_id, message, channel, channel_user_id, body)
+        logger.info("Worker done channel=%s tenant=%s", channel, tenant_id)
+    except Exception:
+        logger.exception("Worker failed channel=%s tenant=%s", channel, tenant_id)
+    return {"statusCode": 200, "body": "ok"}
+
+
 def handler(event, context):
     """API Gateway HTTP API v2 payload format."""
+    # Async self-invocation carrying the slow work — not a webhook delivery.
+    if isinstance(event, dict) and event.get(WORKER_MARKER):
+        return _handle_worker(event)
+
     try:
         path = event.get("rawPath", "")
         headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
@@ -673,6 +806,13 @@ def handler(event, context):
         if channel == "discord" and body.get("type") == 1:
             return {"statusCode": 200, "body": json.dumps({"type": 1})}
 
+        # ── Drop redeliveries ─────────────────────────────────────────────
+        # Claimed before any work so a retry cannot start a second agent turn.
+        delivery_id = _dedupe_key(channel, body)
+        if not _claim_delivery(delivery_id):
+            logger.info("Duplicate delivery %s — dropping", delivery_id)
+            return {"statusCode": 200, "body": "ok"}
+
         # ── Extract message ───────────────────────────────────────────────
         extracted = _extract_message(channel, body)
         if not extracted:
@@ -701,39 +841,44 @@ def handler(event, context):
 
         logger.info("Routing %s → tenant=%s msg_len=%d", channel, tenant_id, len(message_text))
 
-        # ── Invoke AgentCore and send reply synchronously ─────────────────
-        # Lambda freezes the process immediately after handler returns, so
-        # background threads are unreliable. We call AgentCore synchronously
-        # within the 30s Lambda timeout. Telegram/Slack/WhatsApp all tolerate
-        # webhook responses up to 30s. Discord needs a 3s ACK so we use the
-        # deferred response pattern for that channel only.
-        if channel == "discord":
-            # Discord: return ACK immediately, reply via followup webhook
-            import threading
+        # ── Acknowledge now, run the turn asynchronously ──────────────────
+        # The agent turn takes far longer than API Gateway's 30s integration
+        # timeout (verified: 30000ms on this API). Doing the turn before
+        # returning meant the platform never saw a 200, so Telegram kept
+        # redelivering — one message was processed six times and answered twice.
+        # We hand the work to an async invocation of ourselves and return
+        # immediately; the reply is delivered by _handle_worker.
+        job = {
+            "tenant_id": tenant_id,
+            "message": message_text,
+            "channel": channel,
+            "channel_user_id": channel_user_id,
+            "body": body,
+        }
+        dispatched = _dispatch_async(context, job)
 
-            t = threading.Thread(
-                target=_invoke_and_reply,
-                args=(tenant_id, message_text, channel, channel_user_id, body),
-                daemon=False,
-            )
-            t.start()
-            t.join(timeout=25)  # wait up to 25s before Lambda returns
+        if channel == "discord":
+            # Deferred response: Discord shows "thinking…" and the worker posts
+            # the real answer through the interaction followup webhook.
             return {
                 "statusCode": 200,
                 "body": json.dumps({"type": 5}),
                 "headers": {"Content-Type": "application/json"},
             }
 
-        # For all other channels: invoke synchronously then reply
-        response_text = _invoke_agentcore(tenant_id, message_text)
-        if channel == "telegram":
-            _reply_telegram(channel_user_id, response_text)
-        elif channel == "slack":
-            _reply_slack(channel_user_id, response_text)
-        elif channel == "whatsapp":
-            _reply_whatsapp(channel_user_id, response_text)
+        if not dispatched:
+            # Drop the claim so the platform's retry is allowed to try again,
+            # otherwise this message can never be processed.
+            _release_delivery(delivery_id)
+            # Couldn't queue the work — tell the user rather than going silent.
+            if channel == "telegram":
+                _reply_telegram(channel_user_id, "Something went wrong on my end. Please try again.")
+            elif channel == "slack":
+                _reply_slack(channel_user_id, "Something went wrong on my end. Please try again.")
+            elif channel == "whatsapp":
+                _reply_whatsapp(channel_user_id, "Something went wrong on my end. Please try again.")
 
-        return {"statusCode": 200, "body": json.dumps({"status": "ok"})}
+        return {"statusCode": 200, "body": json.dumps({"status": "accepted"})}
 
     except Exception:
         logger.exception("Router unhandled error")
