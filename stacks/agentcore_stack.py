@@ -38,7 +38,8 @@ class AgentCoreStack(cdk.Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         prefix = self.node.try_get_context("stack_prefix") or "OpenClaw"
-        model_id = self.node.try_get_context("default_model_id") or "us.anthropic.claude-sonnet-4-20250514-v1:0"
+        # default_model_id is read by scripts/cli.py, which owns the runtime's
+        # environmentVariables — this stack no longer builds a container env dict.
         docker_image = self.node.try_get_context("docker_image") or "ffactory/openclaw:latest"
         user_files_ttl = self.node.try_get_context("user_files_ttl_days") or 365
 
@@ -212,32 +213,19 @@ class AgentCoreStack(cdk.Stack):
             )
         )
 
-        # --- Environment variables for the container ----------------------
-        guardrail_id = guardrails_stack.guardrail_id or ""
-        guardrail_version = guardrails_stack.guardrail_version or ""
+        # --- Container environment -----------------------------------------
+        # NOT DEFINED HERE. The AgentCore runtime is created/updated by boto3 in
+        # scripts/cli.py (_deploy_phase2), and `environmentVariables` on that call
+        # is the single source of truth — see `agentcore_env` in scripts/cli.py.
+        #
+        # This stack previously also built a `self.container_env` dict. Nothing
+        # consumed it, so adding a variable here appeared to work and never reached
+        # the container. Add runtime env vars to scripts/cli.py instead.
 
-        # Google OAuth credentials are stored in Secrets Manager and injected
-        # at runtime via environment variables read by the gog (gogcli) skill.
-        # The secret ARN is resolved at deploy time; the actual credential
-        # values are fetched by the container on first use.
+        # Google OAuth credentials live in Secrets Manager; scripts/cli.py passes the
+        # ARN plus the per-account values to the runtime. Exposed here only as an
+        # output so `just setup-google` can tell the operator what to populate.
         google_secret_arn = f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:openclaw/google-oauth"
-
-        self.container_env = {
-            "S3_BUCKET": self.workspace_bucket.bucket_name,
-            "STACK_NAME": prefix,
-            "AWS_REGION": self.region,
-            "BEDROCK_MODEL_ID": model_id,
-            "GUARDRAIL_ID": guardrail_id,
-            "GUARDRAIL_VERSION": guardrail_version,
-            # Google OAuth — values resolved from Secrets Manager at container
-            # startup by the entrypoint or gog skill initialisation.
-            # GOG_CREDENTIALS_SECRET_ARN tells the skill where to fetch creds.
-            "GOG_CREDENTIALS_SECRET_ARN": google_secret_arn,
-            # GOG_ACCOUNT is the Google account email; populated by setup-google
-            # and stored in the secret JSON under the "account" key.
-            # The container entrypoint reads the secret and exports these vars.
-            "GOG_ACCOUNT": self.node.try_get_context("google_account") or "",
-        }
 
         # --- Outputs ------------------------------------------------------
         cdk.CfnOutput(self, "ExecutionRoleArn", value=self.execution_role.role_arn)
