@@ -153,14 +153,14 @@ These are set by the CDK `AgentCoreStack` and passed to the container at runtime
 
 ```python
 environment = {
-    "S3_BUCKET":        s3_bucket.bucket_name,
-    "STACK_NAME":       stack_name,
-    "AWS_REGION":       region,
+    "S3_BUCKET": s3_bucket.bucket_name,
+    "STACK_NAME": stack_name,
+    "AWS_REGION": region,
     "BEDROCK_MODEL_ID": cdk.json["default_model_id"],
-    "GUARDRAIL_ID":     guardrail.ref,          # empty string if guardrails disabled
+    "GUARDRAIL_ID": guardrail.ref,  # empty string if guardrails disabled
     "GUARDRAIL_VERSION": "DRAFT",
-    "DYNAMODB_TABLE":   router_stack.table_name,
-    "DYNAMODB_REGION":  region,
+    "DYNAMODB_TABLE": router_stack.table_name,
+    "DYNAMODB_REGION": region,
     # LOCAL_DEV must NOT be set in production
 }
 ```

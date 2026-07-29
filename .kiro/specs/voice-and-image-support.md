@@ -100,20 +100,19 @@ Before adding features, ensure the bot is stable:
    bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
    response = bedrock.invoke_model(
        modelId="us.amazon.nova-lite-v1:0",
-       body=json.dumps({
-           "messages": [{
-               "role": "user",
-               "content": [
+       body=json.dumps(
+           {
+               "messages": [
                    {
-                       "audio": {
-                           "format": "ogg",
-                           "source": {"bytes": base64.b64encode(audio_bytes).decode()}
-                       }
-                   },
-                   {"text": "Transcribe this voice message accurately."}
+                       "role": "user",
+                       "content": [
+                           {"audio": {"format": "ogg", "source": {"bytes": base64.b64encode(audio_bytes).decode()}}},
+                           {"text": "Transcribe this voice message accurately."},
+                       ],
+                   }
                ]
-           }]
-       })
+           }
+       ),
    )
    transcribed_text = parse_nova_response(response)
    ```
@@ -142,20 +141,19 @@ Before adding features, ensure the bot is stable:
    ```python
    response = bedrock.invoke_model(
        modelId="us.amazon.nova-lite-v1:0",
-       body=json.dumps({
-           "messages": [{
-               "role": "user",
-               "content": [
+       body=json.dumps(
+           {
+               "messages": [
                    {
-                       "image": {
-                           "format": "jpeg",
-                           "source": {"bytes": base64.b64encode(image_bytes).decode()}
-                       }
-                   },
-                   {"text": caption or "Describe this image in detail."}
+                       "role": "user",
+                       "content": [
+                           {"image": {"format": "jpeg", "source": {"bytes": base64.b64encode(image_bytes).decode()}}},
+                           {"text": caption or "Describe this image in detail."},
+                       ],
+                   }
                ]
-           }]
-       })
+           }
+       ),
    )
    description = parse_nova_response(response)
    ```

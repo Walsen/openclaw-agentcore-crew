@@ -17,7 +17,10 @@ jobs:
           python-version: "3.13"
 
       - name: Install lint dependencies
-        run: pip install ruff
+        # Pinned: an unpinned linter means a new upstream release can fail CI on
+        # untouched files. ruff 0.16 started formatting Python blocks inside
+        # Markdown, which broke this job on two pre-existing docs files.
+        run: pip install ruff==0.16.0
 
       - name: Ruff lint
         run: ruff check .
