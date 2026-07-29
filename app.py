@@ -95,6 +95,8 @@ router_stack = RouterStack(
     app,
     f"{prefix}Router",
     agentcore_stack=agentcore_stack,
+    # Router alarms (worker failures, dead-lettered jobs) publish to the shared topic.
+    observability_stack=observability_stack,
     env=env,
     description="OpenClaw — Router Lambda, API Gateway, DynamoDB identity",
 )

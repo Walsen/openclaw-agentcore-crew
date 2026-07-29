@@ -300,6 +300,29 @@ def _deploy_phase2(
         agentcore_env["GUARDRAIL_ID"] = guardrail_id
         agentcore_env["GUARDRAIL_VERSION"] = "DRAFT"
 
+    # Jina Reader API key (optional). The jina-reader skill works on the free tier
+    # without a key; a key only raises the limits. Store it with:
+    #   just set-jina-key            (or aws secretsmanager put-secret-value
+    #                                 --secret-id openclaw/skills/jina --secret-string "jina_...")
+    # Absent secret is normal and silent — see the agent repo's docs/SKILLS.md.
+    # (Secrets Manager client is created here because `sm` below is defined later.)
+    sm_skills = session.client("secretsmanager")
+    try:
+        jina_secret = sm_skills.get_secret_value(SecretId="openclaw/skills/jina")["SecretString"].strip()
+        if jina_secret:
+            payload = jina_secret
+            # Accept either a bare key or {"apiKey": "..."} for symmetry with the
+            # other channel secrets.
+            if payload.startswith("{"):
+                payload = (json.loads(payload).get("apiKey") or "").strip()
+            if payload:
+                agentcore_env["JINA_API_KEY"] = payload
+                log.info("Jina Reader: API key injected (paid tier limits)")
+    except sm_skills.exceptions.ResourceNotFoundException:
+        log.info("Jina Reader: no API key secret — skill will use the free tier")
+    except (json.JSONDecodeError, KeyError) as e:
+        log.warning("Jina Reader: could not read openclaw/skills/jina (%s) — using free tier", e)
+
     # Add Google OAuth env vars for all configured accounts.
     #
     # Secret schema (multi-account):

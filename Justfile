@@ -80,6 +80,23 @@ setup-telegram:
 setup-slack:
     {{_cli}} setup slack
 
+# Install a purchased Jina Reader API key (optional — the skill works on the free
+# tier without one). Buy at https://jina.ai/reader/, then:
+#   just set-jina-key jina_xxxxxxxxxxxxxxxx
+# Re-run `just deploy-phase2` afterwards so the runtime picks it up.
+set-jina-key key:
+    aws secretsmanager create-secret --name openclaw/skills/jina \
+        --description "Jina Reader API key for the jina-reader skill" \
+        --secret-string "{{key}}" 2>/dev/null \
+    || aws secretsmanager put-secret-value --secret-id openclaw/skills/jina \
+        --secret-string "{{key}}"
+    @echo "✓ Key stored. Run 'just deploy-phase2' to push it to the runtime."
+
+# Remove the Jina key and fall back to the free tier
+unset-jina-key:
+    aws secretsmanager put-secret-value --secret-id openclaw/skills/jina --secret-string ""
+    @echo "✓ Key cleared. Run 'just deploy-phase2' to apply."
+
 # Set up WhatsApp Business API
 setup-whatsapp:
     {{_cli}} setup whatsapp
