@@ -90,6 +90,10 @@ jobs:
           fetch-depth: 0
 
       - name: Gitleaks — secret detection
-        uses: gitleaks/gitleaks-action@v2
+        # v3 is a pure Node 20 -> Node 24 runtime bump; no input/output/behavior
+        # change. v2 stops working on GitHub-hosted runners after 2026-09-16 when
+        # Node 20 is removed. No GITLEAKS_LICENSE needed: this repo is a personal
+        # (User) account, not an organization.
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
